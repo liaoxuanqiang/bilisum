@@ -15,16 +15,18 @@ logger = logging.getLogger("video_sum_service.app")
 
 def task_artifact_directories(tasks: list[TaskRecord], tasks_dir: Path) -> list[Path]:
     directories: set[Path] = set()
+    managed_tasks_dir = tasks_dir.resolve()
     for task in tasks:
-        directories.add(tasks_dir / task.task_id)
+        directories.add(managed_tasks_dir / task.task_id)
         if task.result is None:
             continue
         for artifact_path in task.result.artifacts.values():
             try:
-                path = Path(str(artifact_path))
-            except (TypeError, ValueError):
+                parent = Path(str(artifact_path)).expanduser().resolve().parent
+            except (OSError, RuntimeError, TypeError, ValueError):
                 continue
-            directories.add(path.parent)
+            if parent == managed_tasks_dir or managed_tasks_dir in parent.parents:
+                directories.add(parent)
     return sorted(directories, key=lambda item: len(item.parts), reverse=True)
 
 
