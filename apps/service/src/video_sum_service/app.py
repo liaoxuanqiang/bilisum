@@ -76,14 +76,7 @@ def _run_host_command(command: list[str], timeout: int = 3600):
 
 
 def recover_incomplete_tasks(repository: SqliteTaskRepository, task_worker) -> int:
-    recoverable = sorted(
-        (
-            record
-            for record in repository.list_tasks()
-            if record.status in {TaskStatus.QUEUED, TaskStatus.RUNNING}
-        ),
-        key=lambda record: (record.created_at, record.task_id),
-    )
+    recoverable = repository.list_recoverable_tasks()
     if not recoverable:
         return 0
 

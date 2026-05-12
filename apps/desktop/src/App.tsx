@@ -127,14 +127,14 @@ export function App() {
 
     async function refresh() {
       try {
-        const [health, systemInfo, settings, videos, environment] = await Promise.all([
+        const [health, systemInfo, settings, videos] = await Promise.all([
           api.getHealth(),
           api.getSystemInfo(),
           api.getSettings(),
           api.listVideos(),
-          api.getEnvironment(),
         ]);
         if (!disposed) {
+          const environment = systemInfo.environment ?? null;
           setSnapshot({ serviceOnline: health.status === "ok", systemInfo, settings, environment, videos, error: "" });
         }
       } catch (error) {

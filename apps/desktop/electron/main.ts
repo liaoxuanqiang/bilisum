@@ -127,6 +127,8 @@ migrateLegacyDesktopFiles();
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let backendProcess: ChildProcess | null = null;
+let applicationLoadPromise: Promise<void> | null = null;
+let applicationLoadedTarget = "";
 let forceQuit = false;
 let preferences: DesktopPreferences = loadPreferences();
 let backendStatus: BackendStatus = {
@@ -879,6 +881,7 @@ function loadSplash(message = "正在启动 BiliSum 服务...") {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
   }
+  applicationLoadedTarget = "";
   void mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(getSplashMarkup(message))}`);
   
   // 注入 IPC 监听脚本
@@ -952,6 +955,23 @@ async function waitForBackendReady(timeoutMs = 60_000): Promise<boolean> {
     await new Promise((resolve) => setTimeout(resolve, 800));
   }
   updateBackendStatus({ ready: false, lastError: "Backend health check timed out." });
+  return false;
+}
+
+async function probeBackendReady(timeoutMs = 300): Promise<boolean> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${backendUrl}/health`, { signal: controller.signal });
+    if (response.ok) {
+      updateBackendStatus({ ready: true, lastError: "" });
+      return true;
+    }
+  } catch {
+    // Fast probe only checks whether an already-running backend is immediately available.
+  } finally {
+    clearTimeout(timeout);
+  }
   return false;
 }
 
@@ -1051,7 +1071,7 @@ async function startBackend(): Promise<BackendStatus> {
     return { ...backendStatus, ready };
   }
 
-  const existingReady = await waitForBackendReady(1_500);
+  const existingReady = await probeBackendReady(300);
   if (existingReady) {
     updateBackendStatus({
       running: true,
@@ -1201,18 +1221,42 @@ async function loadApplication() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
   }
-  await mainWindow.webContents.session.clearCache();
-  if (isDev) {
-    await mainWindow.loadURL(rendererUrl);
-  } else if (backendStatus.ready) {
-    await mainWindow.loadURL(backendUrl);
-  } else {
+
+  const targetUrl = isDev ? rendererUrl : backendStatus.ready ? backendUrl : "";
+  if (!targetUrl) {
     loadSplash();
     return;
   }
+  if (applicationLoadedTarget === targetUrl) {
+    if (!getStartupHidden()) {
+      mainWindow.show();
+    }
+    return;
+  }
+  if (applicationLoadPromise) {
+    await applicationLoadPromise;
+    return;
+  }
 
-  if (!getStartupHidden()) {
-    mainWindow.show();
+  applicationLoadPromise = (async () => {
+    if (isDev) {
+      await mainWindow?.webContents.session.clearCache();
+    }
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return;
+    }
+    await mainWindow.loadURL(targetUrl);
+    applicationLoadedTarget = targetUrl;
+
+    if (!getStartupHidden()) {
+      mainWindow.show();
+    }
+  })();
+
+  try {
+    await applicationLoadPromise;
+  } finally {
+    applicationLoadPromise = null;
   }
 }
 

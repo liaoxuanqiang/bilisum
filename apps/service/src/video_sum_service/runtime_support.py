@@ -40,6 +40,7 @@ from video_sum_service.worker import TaskWorker
 
 _environment_probe_cache: dict[str, dict[str, object]] = {}
 _environment_probe_failures: dict[str, str] = {}
+_ENVIRONMENT_PROBE_CACHE_FILE = "environment-probe-cache.json"
 _PIP_INDEX_CANDIDATES: tuple[tuple[str, str | None], ...] = (
     ("official", None),
     ("tsinghua", "https://pypi.tuna.tsinghua.edu.cn/simple"),
@@ -179,6 +180,56 @@ def run_host_command(command: list[str], timeout: int = 3600) -> subprocess.Comp
 
 def uses_current_service_python(runtime_channel: str) -> bool:
     return not is_frozen() and runtime_channel == "base"
+
+
+def _environment_probe_cache_path() -> Path:
+    return settings_manager.current.cache_dir / _ENVIRONMENT_PROBE_CACHE_FILE
+
+
+def _read_environment_probe_cache_file() -> dict[str, object]:
+    path = _environment_probe_cache_path()
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("ignore invalid environment probe cache path=%s error=%s", path, exc)
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_environment_probe_cache_file(payload: dict[str, object]) -> None:
+    path = _environment_probe_cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        logger.warning("failed to write environment probe cache path=%s error=%s", path, exc)
+
+
+def _load_cached_environment_probe(runtime_channel: str) -> dict[str, object] | None:
+    cached = _environment_probe_cache.get(runtime_channel)
+    if cached is not None:
+        return dict(cached)
+
+    cache_file = _read_environment_probe_cache_file()
+    entry = cache_file.get(runtime_channel)
+    if not isinstance(entry, dict):
+        return None
+    if str(entry.get("runtimeChannel") or runtime_channel) != runtime_channel:
+        return None
+    if entry.get("runtimeReady") and not uses_current_service_python(runtime_channel):
+        if runtime_python_executable(runtime_channel) is None:
+            return None
+    _environment_probe_cache[runtime_channel] = dict(entry)
+    return dict(entry)
+
+
+def _store_cached_environment_probe(runtime_channel: str, payload: dict[str, object]) -> None:
+    _environment_probe_cache[runtime_channel] = dict(payload)
+    cache_file = _read_environment_probe_cache_file()
+    cache_file[runtime_channel] = dict(payload)
+    _write_environment_probe_cache_file(cache_file)
 
 
 def command_error_detail(exc: subprocess.CalledProcessError, fallback: str) -> str:
@@ -572,7 +623,7 @@ def copy_runtime_item(source: Path, target: Path) -> None:
 
 def detect_environment(runtime_channel: str | None = None) -> dict[str, object]:
     active_channel = runtime_channel or settings_manager.current.runtime_channel
-    cached = _environment_probe_cache.get(active_channel)
+    cached = _load_cached_environment_probe(active_channel)
     if cached is not None:
         return dict(cached)
 
@@ -605,7 +656,7 @@ def detect_environment(runtime_channel: str | None = None) -> dict[str, object]:
                 "runtimeReady": False,
                 "runtimePython": "",
             }
-            _environment_probe_cache[active_channel] = dict(payload)
+            _store_cached_environment_probe(active_channel, payload)
             return payload
 
     script = textwrap.dedent(
@@ -715,7 +766,7 @@ def detect_environment(runtime_channel: str | None = None) -> dict[str, object]:
     payload["sentenceTransformersVersion"] = str(payload.get("sentenceTransformersVersion") or "")
     payload["knowledgeDependenciesReady"] = bool(payload.get("knowledgeDependenciesReady"))
     payload["runtimeError"] = str(payload.get("runtimeError") or "")
-    _environment_probe_cache[active_channel] = dict(payload)
+    _store_cached_environment_probe(active_channel, payload)
     return payload
 
 
@@ -723,9 +774,18 @@ def clear_environment_probe_cache(runtime_channel: str | None = None) -> None:
     if runtime_channel is None:
         _environment_probe_cache.clear()
         _environment_probe_failures.clear()
+        path = _environment_probe_cache_path()
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("failed to remove environment probe cache path=%s", path)
         return
     _environment_probe_cache.pop(runtime_channel, None)
     _environment_probe_failures.pop(runtime_channel, None)
+    cache_file = _read_environment_probe_cache_file()
+    if runtime_channel in cache_file:
+        cache_file.pop(runtime_channel, None)
+        _write_environment_probe_cache_file(cache_file)
 
 
 def build_worker(
