@@ -1,7 +1,9 @@
 import { ChildProcess, spawn, SpawnOptions } from "node:child_process";
 import fs from "node:fs";
+import { createServer, IncomingMessage, Server, ServerResponse } from "node:http";
 import path from "node:path";
 import process from "node:process";
+import { Readable } from "node:stream";
 
 import {
   app,
@@ -21,11 +23,13 @@ import desktopPackage from "../package.json";
 import { isAllowedExternalUrl, isCrossOriginNavigation } from "./externalLinks";
 
 type CloseBehavior = "ask" | "tray" | "exit";
+type ThemePreference = "light" | "dark";
 
 type DesktopPreferences = {
   closeBehavior: CloseBehavior;
   rememberCloseBehavior: boolean;
   autoLaunch: boolean;
+  themePreference?: ThemePreference;
   lastOpenedVersion?: string;
   lastSeenAnnouncementVersion?: string;
 };
@@ -110,6 +114,17 @@ const APP_SLUG = "bilisum";
 const LEGACY_APP_SLUG = "briefvid";
 const LEGACY_PRODUCT_NAME = "BriefVid";
 const desktopAppVersion = String(desktopPackage.version || "");
+const mainWindowBounds = {
+  width: 1480,
+  height: 920,
+  minWidth: 1200,
+  minHeight: 760,
+};
+const splashWindowBounds = {
+  width: 860,
+  height: 520,
+};
+const minimumSplashVisibleMs = 1100;
 const repoRoot = path.resolve(__dirname, "../../..");
 const rendererUrl = process.env.BILISUM_RENDERER_URL ?? process.env.BRIEFVID_RENDERER_URL ?? "http://127.0.0.1:5173";
 const backendUrl = "http://127.0.0.1:3838";
@@ -127,8 +142,11 @@ migrateLegacyDesktopFiles();
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let backendProcess: ChildProcess | null = null;
+let frontendStaticServer: Server | null = null;
+let frontendStaticUrl = "";
 let applicationLoadPromise: Promise<void> | null = null;
 let applicationLoadedTarget = "";
+let splashShownAt = 0;
 let forceQuit = false;
 let preferences: DesktopPreferences = loadPreferences();
 let backendStatus: BackendStatus = {
@@ -166,7 +184,7 @@ function legacyLocalDataRoot() {
   return path.join(getLocalAppDataDir(), LEGACY_APP_SLUG);
 }
 
-function copyMissingTree(source: string, destination: string) {
+function copyMissingTree(source: string, destination: string, mergeDepth = 0) {
   if (!fs.existsSync(source)) {
     return;
   }
@@ -174,7 +192,15 @@ function copyMissingTree(source: string, destination: string) {
   if (stats.isDirectory()) {
     fs.mkdirSync(destination, { recursive: true });
     for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
-      copyMissingTree(path.join(source, entry.name), path.join(destination, entry.name));
+      const childSource = path.join(source, entry.name);
+      const childDestination = path.join(destination, entry.name);
+      if (fs.existsSync(childDestination)) {
+        if (entry.isDirectory() && mergeDepth < 1) {
+          copyMissingTree(childSource, childDestination, mergeDepth + 1);
+        }
+        continue;
+      }
+      copyMissingTree(childSource, childDestination);
     }
     return;
   }
@@ -732,6 +758,12 @@ function resetCloseBehavior(): CloseBehavior {
   return "ask";
 }
 
+function setThemePreference(value: ThemePreference): ThemePreference {
+  preferences = { ...preferences, themePreference: value };
+  savePreferences();
+  return value;
+}
+
 function getAnnouncementPath() {
   return path.join(app.getAppPath(), "announcement.md");
 }
@@ -795,82 +827,320 @@ function getStartupHidden(): boolean {
   return process.argv.includes("--hidden");
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function getSplashMarkup(message = "正在启动 BiliSum 服务...") {
+  const version = desktopAppVersion || app.getVersion();
+  const themeClass = preferences.themePreference === "dark" ? "theme-dark" : preferences.themePreference === "light" ? "theme-light" : "";
+  const escapedMessage = escapeHtml(message);
+  const escapedVersion = escapeHtml(version);
+  const escapedThemeClass = escapeHtml(themeClass);
   return `
-    <html lang="zh-CN">
+    <html lang="zh-CN" class="${escapedThemeClass}">
       <head>
         <meta charset="utf-8" />
         <title>BiliSum</title>
         <style>
+          :root {
+            color-scheme: light;
+            --brand-400: #ff9aba;
+            --brand-500: #fb7299;
+            --brand-600: #f85d8e;
+            --brand-700: #d94674;
+            --info: #567eff;
+            --bg-base: #fafbfc;
+            --bg-canvas: #ffffff;
+            --bg-soft: #f5f6f8;
+            --bg-subtle: #f8f9fc;
+            --bg-elevated: #ffffff;
+            --bg-accent: rgba(251, 114, 153, 0.06);
+            --bg-accent-strong: rgba(251, 114, 153, 0.1);
+            --text-primary: #1a1a1a;
+            --text-secondary: #3f4754;
+            --text-muted: #7e8898;
+            --border-subtle: rgba(0, 0, 0, 0.06);
+            --border-default: rgba(0, 0, 0, 0.1);
+            --accent-border: rgba(251, 114, 153, 0.18);
+            --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.1);
+            --highlight: rgba(255, 255, 255, 0.76);
+            --surface-top: rgba(255, 255, 255, 0.9);
+            --surface-bottom: rgba(255, 255, 255, 0.78);
+            --accent-wash: rgba(251, 114, 153, 0.075);
+            --info-wash: rgba(86, 126, 255, 0.055);
+          }
+          :root.theme-dark {
+            color-scheme: dark;
+            --bg-base: #121212;
+            --bg-canvas: #1a1a1a;
+            --bg-soft: #222222;
+            --bg-subtle: #282828;
+            --bg-elevated: #2d2d2d;
+            --bg-accent: rgba(251, 114, 153, 0.1);
+            --bg-accent-strong: rgba(251, 114, 153, 0.16);
+            --text-primary: #f5f5f5;
+            --text-secondary: #b0b0b0;
+            --text-muted: #666666;
+            --border-subtle: rgba(255, 255, 255, 0.08);
+            --border-default: rgba(255, 255, 255, 0.12);
+            --accent-border: rgba(251, 114, 153, 0.24);
+            --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.4);
+            --highlight: rgba(255, 255, 255, 0.06);
+            --surface-top: rgba(26, 26, 26, 0.96);
+            --surface-bottom: rgba(18, 18, 18, 0.92);
+            --accent-wash: rgba(251, 114, 153, 0.052);
+            --info-wash: rgba(86, 126, 255, 0.044);
+          }
+          @media (prefers-color-scheme: dark) {
+            :root:not(.theme-light) {
+              color-scheme: dark;
+              --bg-base: #121212;
+              --bg-canvas: #1a1a1a;
+              --bg-soft: #222222;
+              --bg-subtle: #282828;
+              --bg-elevated: #2d2d2d;
+              --bg-accent: rgba(251, 114, 153, 0.1);
+              --bg-accent-strong: rgba(251, 114, 153, 0.16);
+              --text-primary: #f5f5f5;
+              --text-secondary: #b0b0b0;
+              --text-muted: #666666;
+              --border-subtle: rgba(255, 255, 255, 0.08);
+              --border-default: rgba(255, 255, 255, 0.12);
+              --accent-border: rgba(251, 114, 153, 0.24);
+              --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.4);
+              --highlight: rgba(255, 255, 255, 0.06);
+              --surface-top: rgba(26, 26, 26, 0.96);
+              --surface-bottom: rgba(18, 18, 18, 0.92);
+              --accent-wash: rgba(251, 114, 153, 0.052);
+              --info-wash: rgba(86, 126, 255, 0.044);
+            }
+          }
           body {
             margin: 0;
             min-height: 100vh;
-            display: grid;
-            place-items: center;
-            background:
-              radial-gradient(circle at top right, rgba(251, 114, 153, 0.18), transparent 26%),
-              linear-gradient(180deg, #0b1120 0%, #0f172a 100%);
-            color: #f8fafc;
-            font-family: "Segoe UI", "PingFang SC", sans-serif;
+            overflow: hidden;
+            background: linear-gradient(180deg, var(--bg-base) 0%, var(--bg-soft) 100%);
+            color: var(--text-primary);
+            font-family: "Inter", "Plus Jakarta Sans", "Manrope", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+            user-select: none;
           }
           .splash-container {
             position: relative;
-            width: min(520px, calc(100vw - 48px));
+            box-sizing: border-box;
+            width: 100vw;
+            height: 100vh;
+            padding: 54px 56px 46px;
+            border-radius: 28px;
+            border: 1px solid var(--border-subtle);
+            background:
+              linear-gradient(180deg, var(--surface-top), var(--surface-bottom)),
+              linear-gradient(135deg, var(--accent-wash) 0%, transparent 46%),
+              linear-gradient(225deg, var(--info-wash) 0%, transparent 52%);
+            box-shadow: inset 0 1px 0 var(--highlight), var(--shadow-lg);
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+          }
+          .splash-container::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            border-radius: inherit;
+            background:
+              linear-gradient(115deg, var(--highlight), transparent 28%),
+              linear-gradient(155deg, transparent 18%, var(--accent-wash) 46%, transparent 72%);
+            opacity: 0.56;
+            pointer-events: none;
           }
           .close-button {
             position: absolute;
-            top: 12px;
-            right: 12px;
+            z-index: 3;
+            top: 18px;
+            right: 18px;
             width: 32px;
             height: 32px;
             border: none;
-            background: rgba(255, 255, 255, 0.1);
-            color: #94a3b8;
-            border-radius: 8px;
+            background: color-mix(in srgb, var(--bg-elevated) 86%, transparent);
+            color: var(--text-muted);
+            border-radius: 10px;
             cursor: pointer;
             display: grid;
             place-items: center;
+            box-shadow: inset 0 0 0 1px var(--border-subtle);
             transition: background-color 0.15s ease, color 0.15s ease;
           }
           .close-button:hover {
-            background: rgba(239, 68, 68, 0.2);
-            color: #ef4444;
+            background: var(--bg-accent-strong);
+            color: var(--brand-600);
           }
-          main {
-            padding: 32px;
-            border-radius: 24px;
-            background: rgba(15, 23, 42, 0.82);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            box-shadow: 0 24px 48px rgba(2, 6, 23, 0.38);
+          .brand {
+            position: relative;
+            z-index: 2;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+          }
+          .brand-mark {
+            width: 72px;
+            height: 72px;
+            border-radius: 20px;
+            background:
+              linear-gradient(145deg, var(--bg-elevated), var(--bg-subtle)),
+              linear-gradient(135deg, var(--bg-accent), rgba(86, 126, 255, 0.08));
+            display: grid;
+            place-items: center;
+            box-shadow:
+              0 18px 42px rgba(251, 114, 153, 0.14),
+              inset 0 1px 0 var(--highlight),
+              inset 0 0 0 1px var(--accent-border);
+            animation: brandFloat 3.2s ease-in-out infinite;
+          }
+          .brand-mark svg {
+            width: 48px;
+            height: 48px;
+            filter: drop-shadow(0 6px 10px rgba(63, 162, 210, 0.22));
           }
           h1 {
-            margin: 0 0 12px;
-            font-size: 28px;
+            margin: 0 0 8px;
+            font-size: 30px;
+            line-height: 1;
+            font-weight: 750;
+            letter-spacing: 0;
+            color: var(--text-primary);
           }
-          p {
+          .tagline {
             margin: 0;
-            color: #cbd5e1;
-            line-height: 1.7;
+            color: var(--brand-600);
+            font-size: 15px;
+            font-weight: 600;
+            letter-spacing: 0;
+          }
+          .center-light {
+            position: absolute;
+            inset: 0;
+            background:
+              linear-gradient(135deg, transparent 12%, var(--accent-wash) 36%, transparent 58%),
+              linear-gradient(225deg, transparent 22%, var(--info-wash) 48%, transparent 72%);
+            opacity: 0.78;
+            pointer-events: none;
+            animation: ambientSweep 4.8s ease-in-out infinite;
+          }
+          .progress-zone {
+            position: relative;
+            z-index: 2;
+          }
+          .progress-track {
+            position: relative;
+            height: 3px;
+            border-radius: 999px;
+            overflow: hidden;
+            background: color-mix(in srgb, var(--border-default) 64%, var(--bg-accent) 36%);
+          }
+          .progress-bar {
+            position: absolute;
+            inset: 0 auto 0 0;
+            width: 44%;
+            border-radius: inherit;
+            background: linear-gradient(90deg, var(--brand-500), var(--brand-600), var(--info));
+            box-shadow: 0 0 18px rgba(251, 114, 153, 0.26);
+            animation: progressPulse 2.4s ease-in-out infinite;
+          }
+          .progress-sheen {
+            position: absolute;
+            inset: 0;
+            width: 26%;
+            border-radius: inherit;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.72), transparent);
+            transform: translateX(-100%);
+            animation: sheen 1.8s ease-in-out infinite;
+          }
+          .status-row {
+            margin-top: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 24px;
+            color: var(--text-muted);
+            font-size: 15px;
+            font-weight: 600;
           }
           #status-message {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
             transition: opacity 0.2s ease;
+          }
+          .version {
+            flex: 0 0 auto;
+            color: color-mix(in srgb, var(--text-muted) 72%, transparent);
           }
           .fade-out {
             opacity: 0;
+          }
+          @keyframes brandFloat {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-4px); }
+          }
+          @keyframes ambientSweep {
+            0%, 100% { transform: translateX(-1.5%); opacity: 0.58; }
+            50% { transform: translateX(1.5%); opacity: 0.78; }
+          }
+          @keyframes progressPulse {
+            0%, 100% { width: 36%; opacity: 0.82; }
+            50% { width: 54%; opacity: 1; }
+          }
+          @keyframes sheen {
+            0% { transform: translateX(-110%); opacity: 0; }
+            22% { opacity: 0.75; }
+            70% { opacity: 0.1; }
+            100% { transform: translateX(420%); opacity: 0; }
           }
         </style>
       </head>
       <body>
         <div class="splash-container">
+          <div class="center-light"></div>
           <button class="close-button" onclick="window.close()" aria-label="关闭">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path d="M2 2L12 12M12 2L2 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
             </svg>
           </button>
-          <main>
-            <h1>BiliSum</h1>
-            <p id="status-message">${message}</p>
-          </main>
+          <div class="brand">
+            <div class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 38C17 26 21 24 26 36C30 45 35 44 39 32C43 20 49 18 54 27" stroke="url(#wave)" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M40 22H54M43 31H55" stroke="#67d1c8" stroke-width="4.8" stroke-linecap="round"/>
+                <defs>
+                  <linearGradient id="wave" x1="12" y1="34" x2="55" y2="34" gradientUnits="userSpaceOnUse">
+                    <stop stop-color="#8dc4ff"/>
+                    <stop offset="0.5" stop-color="#a9e7ff"/>
+                    <stop offset="1" stop-color="#70dfc8"/>
+                  </linearGradient>
+                </defs>
+              </svg>
+            </div>
+            <div>
+              <h1>BiliSum</h1>
+              <p class="tagline">视频内容总结与知识整理工具</p>
+            </div>
+          </div>
+          <div class="progress-zone">
+            <div class="progress-track">
+              <div class="progress-bar"></div>
+              <div class="progress-sheen"></div>
+            </div>
+            <div class="status-row">
+              <span id="status-message">${escapedMessage}</span>
+              <span class="version">v${escapedVersion}</span>
+            </div>
+          </div>
         </div>
       </body>
     </html>
@@ -882,6 +1152,11 @@ function loadSplash(message = "正在启动 BiliSum 服务...") {
     return;
   }
   applicationLoadedTarget = "";
+  splashShownAt = Date.now();
+  mainWindow.setResizable(false);
+  mainWindow.setMinimumSize(splashWindowBounds.width, splashWindowBounds.height);
+  mainWindow.setSize(splashWindowBounds.width, splashWindowBounds.height);
+  mainWindow.center();
   void mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(getSplashMarkup(message))}`);
   
   // 注入 IPC 监听脚本
@@ -911,9 +1186,7 @@ function updateSplashMessage(message: string) {
   if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) {
     return;
   }
-  // 转义消息中的特殊字符
-  const escapedMessage = message.replace(/'/g, "\\'").replace(/"/g, '\\"');
-  void mainWindow.webContents.executeJavaScript(`window.updateStatusMessage('${escapedMessage}')`);
+  void mainWindow.webContents.executeJavaScript(`window.updateStatusMessage(${JSON.stringify(message)})`);
 }
 
 function sendBackendStatus() {
@@ -1063,6 +1336,243 @@ function resolvePackagedBackend(): { command: string; args: string[]; cwd: strin
       `当前 resourcesPath: ${process.resourcesPath}`,
     ].join(" "),
   );
+}
+
+function resolvePackagedWebStaticRoot(): string {
+  const candidateRoots = [
+    path.join(process.resourcesPath, "backend", "BiliSum", "_internal", "web", "static"),
+    path.join(path.dirname(process.execPath), "resources", "backend", "BiliSum", "_internal", "web", "static"),
+    path.join(path.dirname(app.getAppPath()), "backend", "BiliSum", "_internal", "web", "static"),
+  ];
+
+  for (const staticRoot of candidateRoots) {
+    if (fs.existsSync(path.join(staticRoot, "index.html"))) {
+      return staticRoot;
+    }
+  }
+
+  throw new Error("未找到内置前端静态文件 index.html。");
+}
+
+function contentTypeFor(filePath: string): string {
+  switch (path.extname(filePath).toLowerCase()) {
+    case ".html":
+      return "text/html; charset=utf-8";
+    case ".js":
+      return "text/javascript; charset=utf-8";
+    case ".css":
+      return "text/css; charset=utf-8";
+    case ".svg":
+      return "image/svg+xml";
+    case ".png":
+      return "image/png";
+    case ".ico":
+      return "image/x-icon";
+    case ".woff":
+      return "font/woff";
+    case ".woff2":
+      return "font/woff2";
+    case ".ttf":
+      return "font/ttf";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function isPathInside(parentPath: string, childPath: string): boolean {
+  const relative = path.relative(parentPath, childPath);
+  return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function isBackendProxyPath(pathname: string): boolean {
+  return (
+    pathname === "/health" ||
+    pathname === "/api" ||
+    pathname.startsWith("/api/") ||
+    pathname === "/media" ||
+    pathname.startsWith("/media/")
+  );
+}
+
+function buildProxyHeaders(request: IncomingMessage): Headers {
+  const headers = new Headers();
+  const skippedHeaders = new Set([
+    "connection",
+    "content-length",
+    "host",
+    "keep-alive",
+    "origin",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "referer",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+  ]);
+  for (const [key, value] of Object.entries(request.headers)) {
+    if (value === undefined) {
+      continue;
+    }
+    if (skippedHeaders.has(key.toLowerCase())) {
+      continue;
+    }
+    headers.set(key, Array.isArray(value) ? value.join(", ") : value);
+  }
+  return headers;
+}
+
+function buildBackendProxyUrl(requestUrl: URL): URL {
+  const targetUrl = new URL(`${requestUrl.pathname}${requestUrl.search}`, backendUrl);
+  if (targetUrl.origin !== backendUrl) {
+    throw new Error(`Refusing to proxy outside backend origin: ${targetUrl.origin}`);
+  }
+  return targetUrl;
+}
+
+function buildBackendResponseHeaders(backendResponse: Response): Record<string, string> {
+  const headers: Record<string, string> = {};
+  const skippedHeaders = new Set([
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+  ]);
+  for (const [key, value] of backendResponse.headers.entries()) {
+    if (!skippedHeaders.has(key.toLowerCase())) {
+      headers[key] = value;
+    }
+  }
+  return headers;
+}
+
+function sendBackendStartingResponse(response: ServerResponse) {
+  if (response.headersSent || response.destroyed) {
+    response.destroy();
+    return;
+  }
+  response.writeHead(503, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+  });
+  response.end(JSON.stringify({ detail: "BiliSum 后端正在启动，请稍后重试。" }));
+}
+
+async function proxyBackendRequest(request: IncomingMessage, response: ServerResponse, requestUrl: URL) {
+  const controller = new AbortController();
+  const abortProxy = () => controller.abort();
+  request.once("aborted", abortProxy);
+  response.once("close", () => {
+    if (!response.writableEnded) {
+      abortProxy();
+    }
+  });
+
+  try {
+    const targetUrl = buildBackendProxyUrl(requestUrl);
+    const backendResponse = await fetch(targetUrl, {
+      method: request.method,
+      headers: buildProxyHeaders(request),
+      body: request.method === "GET" || request.method === "HEAD" ? undefined : request,
+      duplex: "half",
+      signal: controller.signal,
+    } as RequestInit & { duplex: "half" });
+
+    if (response.destroyed) {
+      return;
+    }
+    response.writeHead(backendResponse.status, buildBackendResponseHeaders(backendResponse));
+    if (!backendResponse.body) {
+      response.end();
+      return;
+    }
+
+    const responseBody = Readable.fromWeb(backendResponse.body as import("node:stream/web").ReadableStream);
+    responseBody.once("error", () => response.destroy());
+    response.once("close", () => responseBody.destroy());
+    responseBody.pipe(response);
+  } catch (error) {
+    if ((error as Error).name !== "AbortError") {
+      console.warn("Backend proxy request failed:", error);
+    }
+    sendBackendStartingResponse(response);
+  }
+}
+
+async function startPackagedFrontendServer(): Promise<string> {
+  if (frontendStaticUrl) {
+    return frontendStaticUrl;
+  }
+
+  const staticRoot = resolvePackagedWebStaticRoot();
+  const resolvedStaticRoot = fs.realpathSync.native(staticRoot);
+  const indexPath = path.join(resolvedStaticRoot, "index.html");
+
+  frontendStaticServer = createServer((request, response) => {
+    const requestUrl = new URL(request.url || "/", "http://127.0.0.1");
+    let decodedPath = "/";
+    try {
+      decodedPath = decodeURIComponent(requestUrl.pathname);
+    } catch {
+      response.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end("Bad request");
+      return;
+    }
+    if (isBackendProxyPath(decodedPath)) {
+      void proxyBackendRequest(request, response, requestUrl);
+      return;
+    }
+
+    let filePath = indexPath;
+
+    if (decodedPath.startsWith("/static/")) {
+      filePath = path.join(resolvedStaticRoot, decodedPath.slice("/static/".length));
+    }
+
+    const resolvedFilePath = path.resolve(filePath);
+    if (resolvedFilePath !== resolvedStaticRoot && !isPathInside(resolvedStaticRoot, resolvedFilePath)) {
+      response.writeHead(403);
+      response.end("Forbidden");
+      return;
+    }
+    if (!fs.existsSync(resolvedFilePath) || !fs.statSync(resolvedFilePath).isFile()) {
+      response.writeHead(decodedPath.startsWith("/static/") ? 404 : 200, {
+        "Content-Type": decodedPath.startsWith("/static/") ? "text/plain; charset=utf-8" : contentTypeFor(indexPath),
+        "Cache-Control": "no-store",
+      });
+      response.end(decodedPath.startsWith("/static/") ? "Not found" : fs.readFileSync(indexPath));
+      return;
+    }
+
+    const realFilePath = fs.realpathSync.native(resolvedFilePath);
+    if (realFilePath !== resolvedStaticRoot && !isPathInside(resolvedStaticRoot, realFilePath)) {
+      response.writeHead(403);
+      response.end("Forbidden");
+      return;
+    }
+
+    response.writeHead(200, {
+      "Content-Type": contentTypeFor(realFilePath),
+      "Cache-Control": realFilePath === indexPath ? "no-store" : "public, max-age=31536000, immutable",
+    });
+    fs.createReadStream(realFilePath).pipe(response);
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    frontendStaticServer?.once("error", reject);
+    frontendStaticServer?.listen(0, "127.0.0.1", () => resolve());
+  });
+
+  const address = frontendStaticServer.address();
+  if (!address || typeof address === "string") {
+    throw new Error("前端静态服务启动失败。");
+  }
+  frontendStaticUrl = `http://127.0.0.1:${address.port}`;
+  return frontendStaticUrl;
 }
 
 async function startBackend(): Promise<BackendStatus> {
@@ -1222,7 +1732,7 @@ async function loadApplication() {
     return;
   }
 
-  const targetUrl = isDev ? rendererUrl : backendStatus.ready ? backendUrl : "";
+  const targetUrl = isDev ? rendererUrl : await startPackagedFrontendServer();
   if (!targetUrl) {
     loadSplash();
     return;
@@ -1239,12 +1749,20 @@ async function loadApplication() {
   }
 
   applicationLoadPromise = (async () => {
+    const splashRemainingMs = Math.max(0, minimumSplashVisibleMs - (Date.now() - splashShownAt));
+    if (splashRemainingMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, splashRemainingMs));
+    }
     if (isDev) {
       await mainWindow?.webContents.session.clearCache();
     }
     if (!mainWindow || mainWindow.isDestroyed()) {
       return;
     }
+    mainWindow.setMinimumSize(mainWindowBounds.minWidth, mainWindowBounds.minHeight);
+    mainWindow.setSize(mainWindowBounds.width, mainWindowBounds.height);
+    mainWindow.setResizable(true);
+    mainWindow.center();
     await mainWindow.loadURL(targetUrl);
     applicationLoadedTarget = targetUrl;
 
@@ -1352,11 +1870,13 @@ async function handleCloseAction(): Promise<"hide" | "exit" | "cancel"> {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1480,
-    height: 920,
-    minWidth: 1200,
-    minHeight: 760,
+    width: splashWindowBounds.width,
+    height: splashWindowBounds.height,
+    minWidth: splashWindowBounds.width,
+    minHeight: splashWindowBounds.height,
     show: false,
+    resizable: false,
+    roundedCorners: true,
     title: "BiliSum",
     icon: getTrayImage(),
     frame: false,
@@ -1416,6 +1936,9 @@ function createWindow() {
   });
 
   loadSplash();
+  if (!getStartupHidden()) {
+    mainWindow.show();
+  }
 }
 
 function createTray() {
@@ -1777,6 +2300,12 @@ function registerIpcHandlers() {
     return value;
   });
   ipcMain.handle("desktop:preferences:reset-close-behavior", () => resetCloseBehavior());
+  ipcMain.handle("desktop:preferences:set-theme", (_event, value: ThemePreference) => {
+    if (value !== "light" && value !== "dark") {
+      return getPreferences().themePreference ?? "light";
+    }
+    return setThemePreference(value);
+  });
   
   // 更新相关 IPC
   ipcMain.handle("desktop:update:check", async () => checkForUpdates());
@@ -1813,7 +2342,8 @@ app.whenReady().then(async () => {
     setAutoLaunch(true);
   }
 
-  void startBackend().then(() => loadApplication());
+  void loadApplication();
+  void startBackend();
 
   app.on("activate", async () => {
     if (!mainWindow) {
@@ -1826,6 +2356,7 @@ app.whenReady().then(async () => {
 
 app.on("before-quit", () => {
   forceQuit = true;
+  frontendStaticServer?.close();
   // 清理 autoUpdater 监听器，防止在应用退出后仍触发
   autoUpdater.removeAllListeners();
 });
