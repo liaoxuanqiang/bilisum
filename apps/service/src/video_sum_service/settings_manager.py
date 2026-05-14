@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -18,6 +19,18 @@ from video_sum_infra.config import (
     recommend_mindmap_concurrency,
     recommend_task_concurrency,
 )
+
+SECRET_SETTINGS_FIELDS = {
+    "siliconflow_asr_api_key",
+    "llm_api_key",
+    "knowledge_llm_api_key",
+}
+MASKED_SECRET_PLACEHOLDER = "******"
+
+
+def is_blank_or_masked_secret(value: object) -> bool:
+    text = str(value or "").strip()
+    return not text or text == MASKED_SECRET_PLACEHOLDER
 
 
 class SettingsUpdatePayload(BaseModel):
@@ -51,6 +64,7 @@ class SettingsUpdatePayload(BaseModel):
     llm_base_url: str | None = None
     llm_model: str | None = None
     llm_api_key: str | None = None
+    llm_test_scope: Literal["main", "knowledge"] | None = None
     knowledge_llm_mode: str | None = None
     knowledge_llm_enabled: bool | None = None
     knowledge_llm_base_url: str | None = None
@@ -127,7 +141,10 @@ class SettingsManager:
 
     def save(self, payload: SettingsUpdatePayload) -> ServiceSettings:
         current_dump = self._settings.model_dump(mode="json")
-        updates = payload.model_dump(exclude_none=True)
+        updates = payload.model_dump(exclude_none=True, exclude={"llm_test_scope"})
+        for field in SECRET_SETTINGS_FIELDS:
+            if field in updates and is_blank_or_masked_secret(updates[field]) and current_dump.get(field):
+                updates.pop(field)
         next_settings = ServiceSettings.model_validate({**current_dump, **updates})
         self._settings_path.parent.mkdir(parents=True, exist_ok=True)
         self._settings_path.write_text(

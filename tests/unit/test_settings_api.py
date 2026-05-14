@@ -119,6 +119,88 @@ def test_serialize_settings_masks_provider_api_keys(tmp_path: Path) -> None:
     assert payload["knowledge_llm_api_key_configured"] is True
 
 
+def test_update_settings_preserves_configured_api_keys_when_payload_is_blank(tmp_path: Path) -> None:
+    current = ServiceSettings(
+        data_dir=tmp_path / "data",
+        cache_dir=tmp_path / "cache",
+        tasks_dir=tmp_path / "tasks",
+        runtime_channel="base",
+        siliconflow_asr_api_key="saved-asr-key",
+        llm_api_key="saved-llm-key",
+        knowledge_llm_api_key="saved-knowledge-key",
+    )
+    settings_manager._settings = current
+    settings_manager._settings_path = tmp_path / "settings.json"
+
+    next_settings = settings_manager.save(
+        SettingsUpdatePayload(
+            siliconflow_asr_api_key="",
+            llm_api_key="",
+            knowledge_llm_api_key="",
+            llm_model="new-model",
+        )
+    )
+
+    assert next_settings.siliconflow_asr_api_key == "saved-asr-key"
+    assert next_settings.llm_api_key == "saved-llm-key"
+    assert next_settings.knowledge_llm_api_key == "saved-knowledge-key"
+    assert next_settings.llm_model == "new-model"
+
+
+def test_update_settings_preserves_configured_api_keys_when_payload_is_masked(tmp_path: Path) -> None:
+    current = ServiceSettings(
+        data_dir=tmp_path / "data",
+        cache_dir=tmp_path / "cache",
+        tasks_dir=tmp_path / "tasks",
+        runtime_channel="base",
+        siliconflow_asr_api_key="saved-asr-key",
+        llm_api_key="saved-llm-key",
+        knowledge_llm_api_key="saved-knowledge-key",
+    )
+    settings_manager._settings = current
+    settings_manager._settings_path = tmp_path / "settings.json"
+
+    next_settings = settings_manager.save(
+        SettingsUpdatePayload(
+            siliconflow_asr_api_key="******",
+            llm_api_key="******",
+            knowledge_llm_api_key="******",
+            llm_model="new-model",
+        )
+    )
+
+    assert next_settings.siliconflow_asr_api_key == "saved-asr-key"
+    assert next_settings.llm_api_key == "saved-llm-key"
+    assert next_settings.knowledge_llm_api_key == "saved-knowledge-key"
+    assert next_settings.llm_model == "new-model"
+
+
+def test_update_settings_replaces_api_keys_when_payload_has_new_values(tmp_path: Path) -> None:
+    current = ServiceSettings(
+        data_dir=tmp_path / "data",
+        cache_dir=tmp_path / "cache",
+        tasks_dir=tmp_path / "tasks",
+        runtime_channel="base",
+        siliconflow_asr_api_key="saved-asr-key",
+        llm_api_key="saved-llm-key",
+        knowledge_llm_api_key="saved-knowledge-key",
+    )
+    settings_manager._settings = current
+    settings_manager._settings_path = tmp_path / "settings.json"
+
+    next_settings = settings_manager.save(
+        SettingsUpdatePayload(
+            siliconflow_asr_api_key="new-asr-key",
+            llm_api_key="new-llm-key",
+            knowledge_llm_api_key="new-knowledge-key",
+        )
+    )
+
+    assert next_settings.siliconflow_asr_api_key == "new-asr-key"
+    assert next_settings.llm_api_key == "new-llm-key"
+    assert next_settings.knowledge_llm_api_key == "new-knowledge-key"
+
+
 def test_install_local_asr_refreshes_environment(monkeypatch, tmp_path: Path) -> None:
     current = ServiceSettings(
         data_dir=tmp_path / "data",
@@ -656,6 +738,179 @@ def test_llm_connection_uses_unsaved_payload(monkeypatch, tmp_path: Path) -> Non
     assert calls[0]["json"]["model"] == "new-model"
 
 
+def test_llm_connection_uses_saved_api_key_when_payload_blanks_key(monkeypatch, tmp_path: Path) -> None:
+    current = ServiceSettings(
+        data_dir=tmp_path / "data",
+        cache_dir=tmp_path / "cache",
+        tasks_dir=tmp_path / "tasks",
+        runtime_channel="base",
+        llm_enabled=True,
+        llm_base_url="https://old.example/v1",
+        llm_api_key="saved-key",
+        llm_model="old-model",
+    )
+    settings_manager._settings = current
+
+    calls: list[dict[str, object]] = []
+
+    class FakeResponse:
+        status_code = 200
+        text = '{"choices":[{"message":{"content":"{\\"ok\\":true,\\"message\\":\\"test\\"}"}}]}'
+
+        def json(self) -> dict[str, object]:
+            return {"choices": [{"message": {"content": '{"ok":true,"message":"test"}'}}]}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def post(self, url: str, headers: dict[str, str], json: dict[str, object]) -> FakeResponse:
+            calls.append({"url": url, "headers": headers, "json": json})
+            return FakeResponse()
+
+    monkeypatch.setattr(service_app.httpx, "Client", FakeClient)
+
+    response = probe_llm_connection(
+        SettingsUpdatePayload(
+            llm_base_url="https://api.example.com/v1",
+            llm_api_key="",
+            llm_model="new-model",
+        )
+    )
+
+    assert response["ok"] is True
+    assert response["model"] == "new-model"
+    assert calls[0]["url"] == "https://api.example.com/v1/chat/completions"
+    assert calls[0]["headers"]["Authorization"] == "Bearer saved-key"
+    assert calls[0]["json"]["model"] == "new-model"
+
+
+def test_knowledge_llm_connection_uses_saved_api_key_when_payload_masks_key(monkeypatch, tmp_path: Path) -> None:
+    current = ServiceSettings(
+        data_dir=tmp_path / "data",
+        cache_dir=tmp_path / "cache",
+        tasks_dir=tmp_path / "tasks",
+        runtime_channel="base",
+        llm_enabled=True,
+        llm_base_url="https://main.example/v1",
+        llm_api_key="main-key",
+        llm_model="main-model",
+        knowledge_llm_mode="custom",
+        knowledge_llm_enabled=True,
+        knowledge_llm_base_url="https://knowledge-old.example/v1",
+        knowledge_llm_api_key="knowledge-saved-key",
+        knowledge_llm_model="knowledge-old-model",
+    )
+    settings_manager._settings = current
+
+    calls: list[dict[str, object]] = []
+
+    class FakeResponse:
+        status_code = 200
+        text = '{"choices":[{"message":{"content":"{\\"ok\\":true,\\"message\\":\\"test\\"}"}}]}'
+
+        def json(self) -> dict[str, object]:
+            return {"choices": [{"message": {"content": '{"ok":true,"message":"test"}'}}]}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def post(self, url: str, headers: dict[str, str], json: dict[str, object]) -> FakeResponse:
+            calls.append({"url": url, "headers": headers, "json": json})
+            return FakeResponse()
+
+    monkeypatch.setattr(service_app.httpx, "Client", FakeClient)
+
+    response = probe_llm_connection(
+        SettingsUpdatePayload(
+            llm_test_scope="knowledge",
+            llm_enabled=True,
+            llm_base_url="https://knowledge-new.example/v1",
+            llm_api_key="******",
+            llm_model="knowledge-new-model",
+        )
+    )
+
+    assert response["ok"] is True
+    assert response["model"] == "knowledge-new-model"
+    assert calls[0]["url"] == "https://knowledge-new.example/v1/chat/completions"
+    assert calls[0]["headers"]["Authorization"] == "Bearer knowledge-saved-key"
+    assert calls[0]["json"]["model"] == "knowledge-new-model"
+
+
+def test_knowledge_llm_connection_uses_unsaved_api_key_when_present(monkeypatch, tmp_path: Path) -> None:
+    current = ServiceSettings(
+        data_dir=tmp_path / "data",
+        cache_dir=tmp_path / "cache",
+        tasks_dir=tmp_path / "tasks",
+        runtime_channel="base",
+        llm_enabled=True,
+        llm_base_url="https://main.example/v1",
+        llm_api_key="main-key",
+        llm_model="main-model",
+        knowledge_llm_mode="custom",
+        knowledge_llm_enabled=True,
+        knowledge_llm_base_url="https://knowledge-old.example/v1",
+        knowledge_llm_api_key="knowledge-saved-key",
+        knowledge_llm_model="knowledge-old-model",
+    )
+    settings_manager._settings = current
+
+    calls: list[dict[str, object]] = []
+
+    class FakeResponse:
+        status_code = 200
+        text = '{"choices":[{"message":{"content":"{\\"ok\\":true,\\"message\\":\\"test\\"}"}}]}'
+
+        def json(self) -> dict[str, object]:
+            return {"choices": [{"message": {"content": '{"ok":true,"message":"test"}'}}]}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def post(self, url: str, headers: dict[str, str], json: dict[str, object]) -> FakeResponse:
+            calls.append({"url": url, "headers": headers, "json": json})
+            return FakeResponse()
+
+    monkeypatch.setattr(service_app.httpx, "Client", FakeClient)
+
+    response = probe_llm_connection(
+        SettingsUpdatePayload(
+            llm_test_scope="knowledge",
+            llm_enabled=True,
+            llm_base_url="https://knowledge-new.example/v1",
+            llm_api_key="knowledge-new-key",
+            llm_model="knowledge-new-model",
+        )
+    )
+
+    assert response["ok"] is True
+    assert response["model"] == "knowledge-new-model"
+    assert calls[0]["url"] == "https://knowledge-new.example/v1/chat/completions"
+    assert calls[0]["headers"]["Authorization"] == "Bearer knowledge-new-key"
+    assert calls[0]["json"]["model"] == "knowledge-new-model"
+
+
 def test_llm_connection_normalizes_mimo_model_and_requests_json_mode(monkeypatch, tmp_path: Path) -> None:
     current = ServiceSettings(
         data_dir=tmp_path / "data",
@@ -820,6 +1075,59 @@ def test_asr_connection_uses_unsaved_payload(monkeypatch, tmp_path: Path) -> Non
     assert response["responsePreview"] == "test transcript"
     assert calls[0]["url"] == "https://api.example.com/v1/audio/transcriptions"
     assert calls[0]["headers"]["Authorization"] == "Bearer new-key"
+    assert calls[0]["data"]["model"] == "new-model"
+
+
+def test_asr_connection_uses_saved_api_key_when_payload_masks_key(monkeypatch, tmp_path: Path) -> None:
+    current = ServiceSettings(
+        data_dir=tmp_path / "data",
+        cache_dir=tmp_path / "cache",
+        tasks_dir=tmp_path / "tasks",
+        runtime_channel="base",
+        siliconflow_asr_base_url="https://old.example/v1",
+        siliconflow_asr_api_key="saved-asr-key",
+        siliconflow_asr_model="old-model",
+    )
+    settings_manager._settings = current
+
+    calls: list[dict[str, object]] = []
+
+    class FakeResponse:
+        status_code = 200
+        text = '{"text":"test transcript"}'
+
+        def json(self) -> dict[str, object]:
+            return {"text": "test transcript"}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self) -> "FakeClient":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def post(self, url: str, headers: dict[str, str], data: dict[str, object], files: dict[str, object]) -> FakeResponse:
+            calls.append({"url": url, "headers": headers, "data": data, "files": files})
+            return FakeResponse()
+
+    monkeypatch.setattr(service_app.httpx, "Client", FakeClient)
+
+    response = probe_asr_connection(
+        SettingsUpdatePayload(
+            siliconflow_asr_base_url="https://api.example.com/v1",
+            siliconflow_asr_api_key="******",
+            siliconflow_asr_model="new-model",
+        )
+    )
+
+    assert response["ok"] is True
+    assert response["model"] == "new-model"
+    assert response["responsePreview"] == "test transcript"
+    assert calls[0]["url"] == "https://api.example.com/v1/audio/transcriptions"
+    assert calls[0]["headers"]["Authorization"] == "Bearer saved-asr-key"
     assert calls[0]["data"]["model"] == "new-model"
 
 

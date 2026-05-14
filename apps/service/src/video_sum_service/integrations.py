@@ -10,7 +10,7 @@ from video_sum_infra.llm import normalize_openai_compatible_model_name
 from video_sum_infra.runtime import service_log_path
 
 from video_sum_service.context import COVER_CACHE_DIR, settings_manager
-from video_sum_service.settings_manager import SettingsUpdatePayload
+from video_sum_service.settings_manager import SettingsUpdatePayload, is_blank_or_masked_secret
 
 MAX_LOG_CHARS = 20_000
 MAX_LOG_LINE_CHARS = 1_000
@@ -118,12 +118,25 @@ def build_test_wav_bytes(duration_ms: int = 250, sample_rate: int = 16000) -> by
     return buffer.getvalue()
 
 
-def probe_llm_connection(payload: SettingsUpdatePayload | None = None) -> dict[str, object]:
+def build_effective_llm_test_settings(payload: SettingsUpdatePayload | None = None) -> ServiceSettings:
     current_settings = settings_manager.current
-    updates = payload.model_dump(exclude_none=True) if payload is not None else {}
-    effective_settings = ServiceSettings.model_validate(
-        {**current_settings.model_dump(mode="json"), **updates}
-    )
+    current_dump = current_settings.model_dump(mode="json")
+    if payload is not None and payload.llm_test_scope == "knowledge":
+        current_dump = {
+            **current_dump,
+            "llm_enabled": current_settings.knowledge_llm_enabled,
+            "llm_base_url": current_settings.knowledge_llm_base_url,
+            "llm_api_key": current_settings.knowledge_llm_api_key,
+            "llm_model": current_settings.knowledge_llm_model,
+        }
+    updates = payload.model_dump(exclude_none=True, exclude={"llm_test_scope"}) if payload is not None else {}
+    if "llm_api_key" in updates and is_blank_or_masked_secret(updates["llm_api_key"]) and current_dump.get("llm_api_key"):
+        updates.pop("llm_api_key")
+    return ServiceSettings.model_validate({**current_dump, **updates})
+
+
+def probe_llm_connection(payload: SettingsUpdatePayload | None = None) -> dict[str, object]:
+    effective_settings = build_effective_llm_test_settings(payload)
 
     base_url = str(effective_settings.llm_base_url or "").strip().rstrip("/")
     api_key = str(effective_settings.llm_api_key or "").strip()
@@ -212,6 +225,12 @@ def probe_llm_connection(payload: SettingsUpdatePayload | None = None) -> dict[s
 def probe_asr_connection(payload: SettingsUpdatePayload | None = None) -> dict[str, object]:
     current_settings = settings_manager.current
     updates = payload.model_dump(exclude_none=True) if payload is not None else {}
+    if (
+        "siliconflow_asr_api_key" in updates
+        and is_blank_or_masked_secret(updates["siliconflow_asr_api_key"])
+        and current_settings.siliconflow_asr_api_key
+    ):
+        updates.pop("siliconflow_asr_api_key")
     effective_settings = ServiceSettings.model_validate(
         {**current_settings.model_dump(mode="json"), **updates}
     )
