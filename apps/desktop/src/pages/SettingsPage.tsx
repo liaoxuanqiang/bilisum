@@ -1,4 +1,5 @@
-import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type FocusEvent, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import QRCode from "qrcode";
 
 import {
   DesktopState,
@@ -78,48 +79,78 @@ type SettingsSearchItem = {
   keywords: string[];
 };
 
+type BilibiliCookieCaptureResult = {
+  cookiesFile: string;
+  cookieCount: number;
+  browser?: string;
+};
+
+const MASKED_API_KEY = "******";
+
+function isMaskedApiKey(value: string | undefined | null) {
+  return String(value || "").trim() === MASKED_API_KEY;
+}
+
+function maskConfiguredApiKeys(settings: ServiceSettings | null): ServiceSettings | null {
+  if (!settings) {
+    return settings;
+  }
+  return {
+    ...settings,
+    siliconflow_asr_api_key: settings.siliconflow_asr_api_key_configured ? MASKED_API_KEY : settings.siliconflow_asr_api_key,
+    llm_api_key: settings.llm_api_key_configured ? MASKED_API_KEY : settings.llm_api_key,
+    knowledge_llm_api_key: settings.knowledge_llm_api_key_configured ? MASKED_API_KEY : settings.knowledge_llm_api_key,
+  };
+}
+
+function selectMaskedApiKey(event: FocusEvent<HTMLInputElement>) {
+  if (isMaskedApiKey(event.currentTarget.value)) {
+    event.currentTarget.select();
+  }
+}
+
 const SETTINGS_SEARCH_ITEMS: SettingsSearchItem[] = [
-  { category: "general", targetKey: "host", title: "监听地址", description: "服务绑定的 IP 地址。", keywords: ["host", "ip", "地址", "服务入口"] },
-  { category: "general", targetKey: "port", title: "监听端口", description: "后端服务端口号。", keywords: ["port", "端口", "3838"] },
-  { category: "directories", targetKey: "data_dir", title: "数据目录", description: "视频摘要和元数据保存位置。", keywords: ["data", "目录", "存储", "数据库"] },
-  { category: "directories", targetKey: "cache_dir", title: "缓存目录", description: "临时缓存文件保存位置。", keywords: ["cache", "缓存", "临时文件"] },
-  { category: "directories", targetKey: "tasks_dir", title: "任务目录", description: "任务历史和结果文件位置。", keywords: ["task", "tasks", "任务", "历史"] },
-  { category: "directories", targetKey: "output_dir", title: "输出目录", description: "Markdown / Obsidian 导出目录。", keywords: ["output", "导出", "obsidian", "markdown", "笔记"] },
-  { category: "fileManagement", targetKey: "storage_cleanup", title: "空间清理", description: "查看占用并清理缓存和孤儿任务。", keywords: ["清理", "空间", "缓存", "孤儿", "storage"] },
-  { category: "model", targetKey: "transcription_provider", title: "转写方式", description: "选择云端 ASR 或本地 ASR。", keywords: ["asr", "转写", "语音识别", "whisper", "本地"] },
-  { category: "model", targetKey: "siliconflow_asr_base_url", title: "SiliconFlow Base URL", description: "云端转写 API 地址。", keywords: ["siliconflow", "base url", "api", "硅基流动"] },
-  { category: "model", targetKey: "siliconflow_asr_api_key", title: "SiliconFlow API Key", description: "云端转写 API 密钥。", keywords: ["key", "apikey", "api key", "密钥", "硅基流动"] },
-  { category: "model", targetKey: "siliconflow_asr_model", title: "ASR 模型", description: "云端转写模型名称。", keywords: ["model", "模型", "teleai", "telespeechasr"] },
-  { category: "model", targetKey: "device_preference", title: "推理设备", description: "本地 ASR 使用 CPU 或 CUDA。", keywords: ["cuda", "gpu", "cpu", "设备"] },
-  { category: "model", targetKey: "fixed_model", title: "Whisper 固定模型", description: "本地 Whisper 模型大小。", keywords: ["whisper", "tiny", "base", "small", "medium", "large"] },
-  { category: "llm", targetKey: "llm_enabled", title: "启用 LLM 摘要", description: "打开或关闭大模型摘要。", keywords: ["llm", "摘要", "开启", "关闭"] },
-  { category: "llm", targetKey: "auto_generate_mindmap", title: "自动生成思维导图", description: "摘要完成后自动生成导图。", keywords: ["导图", "mindmap", "自动", "思维导图"] },
-  { category: "llm", targetKey: "llm_base_url", title: "LLM API Base URL", description: "主摘要 LLM API 地址。", keywords: ["base url", "openai", "compatible", "api", "地址"] },
-  { category: "llm", targetKey: "llm_api_key", title: "LLM API Key", description: "主摘要 LLM API 密钥。", keywords: ["key", "apikey", "api key", "密钥"] },
-  { category: "llm", targetKey: "llm_model", title: "LLM 模型名称", description: "主摘要使用的模型名。", keywords: ["model", "模型", "gpt", "qwen", "mimo", "claude"] },
+  { category: "maintenance", targetKey: "host", title: "监听地址", description: "服务绑定的 IP 地址。", keywords: ["host", "ip", "地址", "服务入口"] },
+  { category: "maintenance", targetKey: "port", title: "监听端口", description: "后端服务端口号。", keywords: ["port", "端口", "3838"] },
+  { category: "files", targetKey: "data_dir", title: "数据目录", description: "视频摘要和元数据保存位置。", keywords: ["data", "目录", "存储", "数据库"] },
+  { category: "files", targetKey: "cache_dir", title: "缓存目录", description: "临时缓存文件保存位置。", keywords: ["cache", "缓存", "临时文件"] },
+  { category: "files", targetKey: "tasks_dir", title: "任务目录", description: "任务历史和结果文件位置。", keywords: ["task", "tasks", "任务", "历史"] },
+  { category: "files", targetKey: "output_dir", title: "输出目录", description: "Markdown / Obsidian 导出目录。", keywords: ["output", "导出", "obsidian", "markdown", "笔记"] },
+  { category: "files", targetKey: "storage_cleanup", title: "空间清理", description: "查看占用并清理缓存和孤儿任务。", keywords: ["清理", "空间", "缓存", "孤儿", "storage"] },
+  { category: "transcription", targetKey: "transcription_provider", title: "转写方式", description: "选择云端 ASR 或本地 ASR。", keywords: ["asr", "转写", "语音识别", "whisper", "本地"] },
+  { category: "transcription", targetKey: "siliconflow_asr_base_url", title: "SiliconFlow Base URL", description: "云端转写 API 地址。", keywords: ["siliconflow", "base url", "api", "硅基流动"] },
+  { category: "transcription", targetKey: "siliconflow_asr_api_key", title: "SiliconFlow API Key", description: "云端转写 API 密钥。", keywords: ["key", "apikey", "api key", "密钥", "硅基流动"] },
+  { category: "transcription", targetKey: "siliconflow_asr_model", title: "ASR 模型", description: "云端转写模型名称。", keywords: ["model", "模型", "teleai", "telespeechasr"] },
+  { category: "transcription", targetKey: "device_preference", title: "推理设备", description: "本地 ASR 使用 CPU 或 CUDA。", keywords: ["cuda", "gpu", "cpu", "设备"] },
+  { category: "transcription", targetKey: "fixed_model", title: "Whisper 固定模型", description: "本地 Whisper 模型大小。", keywords: ["whisper", "tiny", "base", "small", "medium", "large"] },
+  { category: "generation", targetKey: "llm_enabled", title: "启用 LLM 摘要", description: "打开或关闭大模型摘要。", keywords: ["llm", "摘要", "开启", "关闭"] },
+  { category: "generation", targetKey: "auto_generate_mindmap", title: "自动生成思维导图", description: "摘要完成后自动生成导图。", keywords: ["导图", "mindmap", "自动", "思维导图"] },
+  { category: "generation", targetKey: "llm_base_url", title: "LLM API Base URL", description: "主摘要 LLM API 地址。", keywords: ["base url", "openai", "compatible", "api", "地址"] },
+  { category: "generation", targetKey: "llm_api_key", title: "LLM API Key", description: "主摘要 LLM API 密钥。", keywords: ["key", "apikey", "api key", "密钥"] },
+  { category: "generation", targetKey: "llm_model", title: "LLM 模型名称", description: "主摘要使用的模型名。", keywords: ["model", "模型", "gpt", "qwen", "mimo", "claude"] },
   { category: "knowledge", targetKey: "knowledge_enabled", title: "启用知识库", description: "开启知识库索引和问答能力。", keywords: ["知识库", "knowledge", "rag", "索引", "问答"] },
   { category: "knowledge", targetKey: "knowledge_dependencies", title: "知识库依赖", description: "安装和检查知识库扩展依赖。", keywords: ["依赖", "安装", "runtime", "faiss", "向量"] },
   { category: "knowledge", targetKey: "knowledge_llm_mode", title: "知识库 LLM 来源", description: "跟随主 LLM 或使用独立配置。", keywords: ["知识库", "llm", "来源", "独立配置"] },
   { category: "knowledge", targetKey: "knowledge_llm_base_url", title: "知识库 API Base URL", description: "独立知识库 LLM API 地址。", keywords: ["知识库", "base url", "api", "openai"] },
   { category: "knowledge", targetKey: "knowledge_llm_api_key", title: "知识库 API Key", description: "独立知识库 LLM API 密钥。", keywords: ["知识库", "key", "apikey", "密钥"] },
   { category: "knowledge", targetKey: "knowledge_llm_model", title: "知识库模型名称", description: "独立知识库 LLM 模型名。", keywords: ["知识库", "model", "模型", "问答"] },
-  { category: "summary", targetKey: "summary_mode", title: "摘要模式", description: "LLM 智能摘要或抽取式摘要。", keywords: ["摘要", "summary", "抽取式", "llm"] },
-  { category: "summary", targetKey: "language", title: "语言", description: "摘要输出语言。", keywords: ["语言", "中文", "english", "日本語"] },
-  { category: "summary", targetKey: "summary_chunk_target_chars", title: "分块目标字符数", description: "LLM 分块处理的目标长度。", keywords: ["分块", "chunk", "字符", "长度"] },
-  { category: "summary", targetKey: "summary_chunk_overlap_segments", title: "分块重叠段数", description: "摘要分块之间保留的重叠段落。", keywords: ["重叠", "overlap", "分块"] },
-  { category: "summary", targetKey: "summary_chunk_retry_count", title: "重试次数", description: "摘要 API 失败后的重试次数。", keywords: ["重试", "retry", "失败"] },
-  { category: "summary", targetKey: "knowledge_note_system_prompt", title: "知识笔记 System Prompt", description: "控制知识笔记角色、风格和整体约束。", keywords: ["知识笔记", "prompt", "system", "提示词", "风格"] },
-  { category: "summary", targetKey: "knowledge_note_user_prompt_template", title: "知识笔记 User Template", description: "控制知识笔记变量、结构和 Markdown 格式。", keywords: ["知识笔记", "template", "模板", "格式", "summary_json", "transcript"] },
+  { category: "generation", targetKey: "summary_mode", title: "摘要模式", description: "LLM 智能摘要或抽取式摘要。", keywords: ["摘要", "summary", "抽取式", "llm"] },
+  { category: "generation", targetKey: "language", title: "语言", description: "摘要输出语言。", keywords: ["语言", "中文", "english", "日本語"] },
+  { category: "generation", targetKey: "summary_chunk_target_chars", title: "分块目标字符数", description: "LLM 分块处理的目标长度。", keywords: ["分块", "chunk", "字符", "长度"] },
+  { category: "generation", targetKey: "summary_chunk_overlap_segments", title: "分块重叠段数", description: "摘要分块之间保留的重叠段落。", keywords: ["重叠", "overlap", "分块"] },
+  { category: "generation", targetKey: "summary_chunk_retry_count", title: "重试次数", description: "摘要 API 失败后的重试次数。", keywords: ["重试", "retry", "失败"] },
+  { category: "prompts", targetKey: "knowledge_note_system_prompt", title: "知识笔记 System Prompt", description: "控制知识笔记角色、风格和整体约束。", keywords: ["知识笔记", "prompt", "system", "提示词", "风格"] },
+  { category: "prompts", targetKey: "knowledge_note_user_prompt_template", title: "知识笔记 User Template", description: "控制知识笔记变量、结构和 Markdown 格式。", keywords: ["知识笔记", "template", "模板", "格式", "summary_json", "transcript"] },
   { category: "performance", targetKey: "task_concurrency", title: "任务并发数", description: "控制整体任务吞吐。", keywords: ["并发", "concurrency", "任务", "性能"] },
   { category: "performance", targetKey: "mindmap_concurrency", title: "导图并发数", description: "控制导图生成并发。", keywords: ["导图", "并发", "mindmap"] },
   { category: "performance", targetKey: "summary_chunk_concurrency", title: "摘要分块并发数", description: "控制单任务内部摘要请求并发。", keywords: ["摘要", "分块", "并发", "chunk"] },
-  { category: "advanced", targetKey: "cuda_variant", title: "CUDA 变体", description: "选择 PyTorch CUDA 版本。", keywords: ["cuda", "cu128", "cu126", "cu124", "gpu"] },
-  { category: "advanced", targetKey: "runtime_channel", title: "运行时通道", description: "选择基础版或 GPU 运行时。", keywords: ["runtime", "运行时", "gpu", "base"] },
-  { category: "advanced", targetKey: "preserve_temp_audio", title: "保留临时音频", description: "控制是否保留转写中间音频。", keywords: ["音频", "临时", "preserve", "temp"] },
-  { category: "advanced", targetKey: "enable_cache", title: "启用缓存", description: "控制任务缓存行为。", keywords: ["缓存", "cache"] },
-  { category: "advanced", targetKey: "ytdlp_cookies_file", title: "yt-dlp Cookies 文件", description: "配置 B 站登录态 cookies.txt。", keywords: ["cookie", "cookies", "b站", "登录", "风控", "412"] },
-  { category: "environment", targetKey: "runtime_status", title: "运行时状态", description: "检查 Python、Torch、CUDA 与扩展依赖。", keywords: ["运行时", "环境", "torch", "python", "cuda"] },
-  { category: "environment", targetKey: "local_asr_runtime", title: "本地 ASR 运行时", description: "安装或检查本地 ASR 依赖。", keywords: ["本地", "asr", "whisper", "安装"] },
+  { category: "performance", targetKey: "cuda_variant", title: "CUDA 变体", description: "选择 PyTorch CUDA 版本。", keywords: ["cuda", "cu128", "cu126", "cu124", "gpu"] },
+  { category: "performance", targetKey: "runtime_channel", title: "运行时通道", description: "选择基础版或 GPU 运行时。", keywords: ["runtime", "运行时", "gpu", "base"] },
+  { category: "video", targetKey: "preserve_temp_audio", title: "保留临时音频", description: "控制是否保留转写中间音频。", keywords: ["音频", "临时", "preserve", "temp"] },
+  { category: "video", targetKey: "enable_cache", title: "启用缓存", description: "控制任务缓存行为。", keywords: ["缓存", "cache"] },
+  { category: "video", targetKey: "ytdlp_cookies_file", title: "yt-dlp Cookies 文件", description: "配置 B 站登录态 cookies.txt。", keywords: ["cookie", "cookies", "b站", "登录", "风控", "412"] },
+  { category: "runtime", targetKey: "runtime_status", title: "运行时状态", description: "检查 Python、Torch、CUDA 与扩展依赖。", keywords: ["运行时", "环境", "torch", "python", "cuda"] },
+  { category: "runtime", targetKey: "local_asr_runtime", title: "本地 ASR 运行时", description: "安装或检查本地 ASR 依赖。", keywords: ["本地", "asr", "whisper", "安装"] },
   { category: "logs", targetKey: "service_logs", title: "服务日志", description: "查看后端服务日志。", keywords: ["日志", "log", "报错", "服务"] },
   { category: "updates", targetKey: "app_updates", title: "应用更新", description: "检查桌面应用新版本。", keywords: ["更新", "版本", "update", "release"] },
 ];
@@ -160,7 +191,7 @@ export function SettingsPage({
   onInstallUpdate,
   onOpenUpdateDialog,
 }: SettingsPageProps) {
-  const [form, setForm] = useState<ServiceSettings | null>(snapshot.settings);
+  const [form, setForm] = useState<ServiceSettings | null>(() => maskConfiguredApiKeys(snapshot.settings));
   const [environment, setEnvironment] = useState<EnvironmentInfo | null>(snapshot.environment);
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -175,6 +206,10 @@ export function SettingsPage({
   const [localAsrStatus, setLocalAsrStatus] = useState("");
   const [localAsrOutput, setLocalAsrOutput] = useState("");
   const [localAsrInstalling, setLocalAsrInstalling] = useState(false);
+  const [bilibiliCookieCapturing, setBilibiliCookieCapturing] = useState(false);
+  const [bilibiliCookieStatus, setBilibiliCookieStatus] = useState("");
+  const [bilibiliQrcodeKey, setBilibiliQrcodeKey] = useState("");
+  const [bilibiliQrcodeImage, setBilibiliQrcodeImage] = useState("");
   const [knowledgeDepsStatus, setKnowledgeDepsStatus] = useState("");
   const [knowledgeDepsOutput, setKnowledgeDepsOutput] = useState("");
   const [knowledgeDepsInstalling, setKnowledgeDepsInstalling] = useState(false);
@@ -209,7 +244,7 @@ export function SettingsPage({
     if (isDirty) {
       return;
     }
-    setForm(snapshot.settings);
+    setForm(maskConfiguredApiKeys(snapshot.settings));
   }, [isDirty, snapshot.settings]);
 
   useEffect(() => {
@@ -231,6 +266,61 @@ export function SettingsPage({
     }, 30 * 60 * 1000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!bilibiliQrcodeKey) {
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const result = await api.pollBilibiliCookieQrcode(bilibiliQrcodeKey);
+          if (cancelled) {
+            return;
+          }
+          if (result.status === "pending") {
+            setBilibiliCookieStatus("等待手机 B 站扫码。");
+            return;
+          }
+          if (result.status === "scanned") {
+            setBilibiliCookieStatus("已扫码，请在手机 B 站上确认登录。");
+            return;
+          }
+          if (result.status === "expired") {
+            setBilibiliCookieStatus(result.message || "二维码已过期，请重新获取。");
+            setBilibiliQrcodeKey("");
+            setBilibiliQrcodeImage("");
+            return;
+          }
+          if (result.status === "confirmed" && result.cookiesFile) {
+            const response = await api.updateSettings({
+              ytdlp_cookies_file: result.cookiesFile,
+              ytdlp_cookies_browser: "",
+            });
+            if (cancelled) {
+              return;
+            }
+            setForm(maskConfiguredApiKeys(response.settings));
+            setIsDirty(false);
+            setSaveStatus(response.message || "设置已保存");
+            setBilibiliCookieStatus(`B 站登录态已保存，捕获 ${result.cookieCount || 0} 条 cookies。`);
+            setBilibiliQrcodeKey("");
+            setBilibiliQrcodeImage("");
+            onSettingsSaved(response.settings, environment);
+          }
+        } catch (error) {
+          if (!cancelled) {
+            setBilibiliCookieStatus(error instanceof Error ? error.message : "二维码登录状态检查失败。");
+          }
+        }
+      })();
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [bilibiliQrcodeKey, environment, onSettingsSaved]);
 
   async function refreshLogs() {
     try {
@@ -386,7 +476,7 @@ export function SettingsPage({
   const effectiveLogPath = logPath || snapshot.systemInfo?.service?.log_file || desktop.logPath || "-";
   const targetRuntimeChannel = `gpu-${form?.cuda_variant || "cu128"}`;
   const activeCategoryMeta = settingsCategories.find((category) => category.id === activeCategory) || settingsCategories[0];
-  const workspaceCategories = settingsCategories.filter((category) => category.group === "workspace");
+  const workflowCategories = settingsCategories.filter((category) => category.group === "workflow");
   const systemCategories = settingsCategories.filter((category) => category.group === "system");
   const normalizedSettingsSearchQuery = settingsSearchQuery.trim().toLowerCase();
   const settingsSearchTokens = normalizedSettingsSearchQuery.split(/\s+/).filter(Boolean);
@@ -433,7 +523,7 @@ export function SettingsPage({
   ];
 
   useEffect(() => {
-    if (!form || activeCategory !== "fileManagement") {
+    if (!form || activeCategory !== "files") {
       return;
     }
     // 使用 setTimeout 延迟执行，避免阻塞 UI 渲染
@@ -575,25 +665,42 @@ export function SettingsPage({
     if (!String(nextForm.host || "").trim()) {
       return {
         message: "请先填写监听地址。",
-        category: "general",
+        category: "maintenance",
         targetKey: "host",
       };
     }
     if (nextForm.transcription_provider === "siliconflow" && !String(nextForm.siliconflow_asr_base_url || "").trim()) {
       return {
         message: "请先填写 SiliconFlow Base URL。",
-        category: "model",
+        category: "transcription",
         targetKey: "siliconflow_asr_base_url",
       };
     }
     if (nextForm.llm_enabled && !String(nextForm.llm_base_url || "").trim()) {
       return {
         message: "请先填写 LLM API Base URL。",
-        category: "llm",
+        category: "generation",
         targetKey: "llm_base_url",
       };
     }
     return null;
+  }
+
+  function buildSettingsSavePayload(nextForm: ServiceSettings): Partial<ServiceSettings> {
+    const payload: Partial<ServiceSettings> = {
+      ...nextForm,
+      device_preference: normalizeDevicePreference(nextForm.device_preference),
+    };
+    if (nextForm.siliconflow_asr_api_key_configured && (!String(nextForm.siliconflow_asr_api_key || "").trim() || isMaskedApiKey(nextForm.siliconflow_asr_api_key))) {
+      delete payload.siliconflow_asr_api_key;
+    }
+    if (nextForm.llm_api_key_configured && (!String(nextForm.llm_api_key || "").trim() || isMaskedApiKey(nextForm.llm_api_key))) {
+      delete payload.llm_api_key;
+    }
+    if (nextForm.knowledge_llm_api_key_configured && (!String(nextForm.knowledge_llm_api_key || "").trim() || isMaskedApiKey(nextForm.knowledge_llm_api_key))) {
+      delete payload.knowledge_llm_api_key;
+    }
+    return payload;
   }
 
   async function save(event: FormEvent) {
@@ -608,12 +715,9 @@ export function SettingsPage({
     }
     try {
       setIsSaving(true);
-      const response = await api.updateSettings({
-        ...form,
-        device_preference: normalizeDevicePreference(form.device_preference),
-      });
+      const response = await api.updateSettings(buildSettingsSavePayload(form));
       const nextSettings = response.settings;
-      setForm(nextSettings);
+      setForm(maskConfiguredApiKeys(nextSettings));
       setIsDirty(false);
       setSaveStatus(response.message || "设置已保存");
       void (async () => {
@@ -646,11 +750,10 @@ export function SettingsPage({
       if (response.installed) {
         try {
           const settingsResponse = await api.updateSettings({
-            ...form,
+            ...buildSettingsSavePayload(form),
             transcription_provider: "local",
-            device_preference: normalizeDevicePreference(form.device_preference),
           });
-          setForm(settingsResponse.settings);
+          setForm(maskConfiguredApiKeys(settingsResponse.settings));
           setIsDirty(false);
           setSaveStatus(settingsResponse.message || "已切换为本地 ASR");
           onSettingsSaved(settingsResponse.settings, nextEnvironment);
@@ -685,6 +788,51 @@ export function SettingsPage({
     }
   }
 
+  async function captureBilibiliLoginCookies() {
+    if (!form || bilibiliCookieCapturing) {
+      return;
+    }
+    try {
+      setBilibiliCookieCapturing(true);
+      setBilibiliQrcodeKey("");
+      setBilibiliQrcodeImage("");
+      const desktopBilibili = window.desktop?.bilibili;
+      if (!desktopBilibili) {
+        setBilibiliCookieStatus("正在生成 B 站扫码登录二维码...");
+        const login = await api.createBilibiliCookieQrcode();
+        const image = await QRCode.toDataURL(login.url, {
+          margin: 1,
+          width: 180,
+          color: {
+            dark: "#111111",
+            light: "#ffffff",
+          },
+        });
+        setBilibiliQrcodeKey(login.qrcodeKey);
+        setBilibiliQrcodeImage(image);
+        setBilibiliCookieStatus("请用手机 B 站扫码，并在手机上确认登录。");
+        return;
+      }
+      setBilibiliCookieStatus("请在新窗口登录 B 站，登录成功后会自动保存 cookies...");
+      const captured: BilibiliCookieCaptureResult = await desktopBilibili.captureLoginCookies();
+      const response = await api.updateSettings({
+        ytdlp_cookies_file: captured.cookiesFile,
+        ytdlp_cookies_browser: "",
+      });
+      const nextSettings = maskConfiguredApiKeys(response.settings);
+      setForm(nextSettings);
+      setIsDirty(false);
+      setSaveStatus(response.message || "设置已保存");
+      const browserSuffix = captured.browser ? `（${captured.browser}）` : "";
+      setBilibiliCookieStatus(`B 站登录态已保存${browserSuffix}，捕获 ${captured.cookieCount} 条 cookies。`);
+      onSettingsSaved(response.settings, environment);
+    } catch (error) {
+      setBilibiliCookieStatus(error instanceof Error ? error.message : "捕获 B 站登录态失败，请按教程手动导出 cookies.txt。");
+    } finally {
+      setBilibiliCookieCapturing(false);
+    }
+  }
+
   async function testLlmConnection() {
     if (!form || llmTestBusy) {
       return;
@@ -696,8 +844,8 @@ export function SettingsPage({
         llm_enabled: form.llm_enabled,
         llm_provider: form.llm_provider,
         llm_base_url: form.llm_base_url,
-        llm_api_key: form.llm_api_key,
         llm_model: form.llm_model,
+        ...(form.llm_api_key.trim() && !isMaskedApiKey(form.llm_api_key) ? { llm_api_key: form.llm_api_key } : {}),
       });
       const preview = response.jsonPreview || response.responsePreview;
       const suffix = preview ? `，示例：${preview}` : "";
@@ -717,10 +865,11 @@ export function SettingsPage({
       setLlmTestBusy(true);
       setLlmTestStatus("正在测试知识库 LLM 连接与 JSON 输出...");
       const response = await api.testLlmConnection({
+        llm_test_scope: "knowledge",
         llm_enabled: form.knowledge_llm_enabled,
         llm_base_url: form.knowledge_llm_base_url,
-        llm_api_key: form.knowledge_llm_api_key,
         llm_model: form.knowledge_llm_model,
+        ...(form.knowledge_llm_api_key.trim() && !isMaskedApiKey(form.knowledge_llm_api_key) ? { llm_api_key: form.knowledge_llm_api_key } : {}),
       });
       const preview = response.jsonPreview || response.responsePreview;
       const suffix = preview ? `，示例：${preview}` : "";
@@ -742,8 +891,8 @@ export function SettingsPage({
       const response = await api.testAsrConnection({
         transcription_provider: form.transcription_provider,
         siliconflow_asr_base_url: form.siliconflow_asr_base_url,
-        siliconflow_asr_api_key: form.siliconflow_asr_api_key,
         siliconflow_asr_model: form.siliconflow_asr_model,
+        ...(form.siliconflow_asr_api_key.trim() && !isMaskedApiKey(form.siliconflow_asr_api_key) ? { siliconflow_asr_api_key: form.siliconflow_asr_api_key } : {}),
       });
       const preview = response.responsePreview ? `，示例：${response.responsePreview}` : "";
       setAsrTestStatus(`${response.message}${preview}`);
@@ -798,13 +947,13 @@ export function SettingsPage({
       return null;
     }
     if (issueKey === "siliconflow_asr_api_key") {
-      return { category: "model", targetKey: "siliconflow_asr_api_key" };
+      return { category: "transcription", targetKey: "siliconflow_asr_api_key" };
     }
     if (issueKey === "local_asr_runtime") {
-      return { category: "environment", targetKey: "local_asr_runtime" };
+      return { category: "runtime", targetKey: "local_asr_runtime" };
     }
     if (issueKey === "auto_mindmap_requires_llm") {
-      return { category: "llm", targetKey: "llm_enabled" };
+      return { category: "generation", targetKey: "llm_enabled" };
     }
     if (issueKey === "knowledge_dependencies") {
       return { category: "knowledge", targetKey: "knowledge_dependencies" };
@@ -823,30 +972,30 @@ export function SettingsPage({
         return { category: "knowledge", targetKey: "knowledge_llm_base_url" };
       }
       if (!form.llm_enabled) {
-        return { category: "llm", targetKey: "llm_enabled" };
+        return { category: "generation", targetKey: "llm_enabled" };
       }
       if (!String(form.llm_base_url || "").trim()) {
-        return { category: "llm", targetKey: "llm_base_url" };
+        return { category: "generation", targetKey: "llm_base_url" };
       }
       if (!String(form.llm_model || "").trim()) {
-        return { category: "llm", targetKey: "llm_model" };
+        return { category: "generation", targetKey: "llm_model" };
       }
       return { category: "knowledge", targetKey: "knowledge_llm_mode" };
     }
     if (issueKey === "llm_configuration") {
       if (!String(form.llm_base_url || "").trim()) {
-        return { category: "llm", targetKey: "llm_base_url" };
+        return { category: "generation", targetKey: "llm_base_url" };
       }
       if (!form.llm_api_key_configured && !String(form.llm_api_key || "").trim()) {
-        return { category: "llm", targetKey: "llm_api_key" };
+        return { category: "generation", targetKey: "llm_api_key" };
       }
       if (!String(form.llm_model || "").trim()) {
-        return { category: "llm", targetKey: "llm_model" };
+        return { category: "generation", targetKey: "llm_model" };
       }
-      return { category: "llm", targetKey: "llm_base_url" };
+      return { category: "generation", targetKey: "llm_base_url" };
     }
     if (issueKey === "ytdlp_cookies_browser" || issueKey === "ytdlp_cookies_file") {
-      return { category: "advanced", targetKey: "ytdlp_cookies_file" };
+      return { category: "video", targetKey: "ytdlp_cookies_file" };
     }
     return null;
   }
@@ -890,9 +1039,9 @@ export function SettingsPage({
         </div>
         <div className="settings-nav-list">
           <div className="settings-nav-group">
-            <span className="settings-nav-group-label">工作区</span>
+            <span className="settings-nav-group-label">工作流</span>
             <nav className="settings-nav-links">
-              {workspaceCategories.map((category) => (
+              {workflowCategories.map((category) => (
                 <button
                   key={category.id}
                   className={`settings-nav-item ${activeCategory === category.id ? "active" : ""}`}
@@ -1226,20 +1375,20 @@ export function SettingsPage({
               <div className="overview-section">
                 <h3 className="overview-section-title">快速操作</h3>
                 <div className="overview-actions">
-                  <button className="tertiary-button" type="button" onClick={() => setActiveCategory("environment")}>环境设置</button>
+                  <button className="tertiary-button" type="button" onClick={() => setActiveCategory("runtime")}>运行时维护</button>
                   <button className="tertiary-button" type="button" onClick={() => setActiveCategory("logs")}>查看日志</button>
-                  <button className="tertiary-button" type="button" onClick={() => setActiveCategory("model")}>模型配置</button>
-                  <button className="tertiary-button" type="button" onClick={() => setActiveCategory("llm")}>LLM 设置</button>
+                  <button className="tertiary-button" type="button" onClick={() => setActiveCategory("transcription")}>转写设置</button>
+                  <button className="tertiary-button" type="button" onClick={() => setActiveCategory("generation")}>摘要设置</button>
                 </div>
               </div>
             </section>
           )}
 
-          {activeCategory === "general" && (
+          {activeCategory === "maintenance" && (
             <section className="settings-category-section">
               <header className="settings-category-header">
-                <h2>基础设置</h2>
-                <p>服务监听地址和端口配置。</p>
+                <h2>维护与诊断</h2>
+                <p>服务监听地址和端口配置。一般不需要改，只有端口冲突或外部接入时再调整。</p>
               </header>
               <div className="settings-form-group">
                 <label className="settings-input-group">
@@ -1267,11 +1416,11 @@ export function SettingsPage({
             </section>
           )}
 
-          {activeCategory === "directories" && (
+          {activeCategory === "files" && (
             <section className="settings-category-section">
               <header className="settings-category-header">
-                <h2>目录设置</h2>
-                <p>数据存储和缓存目录配置。</p>
+                <h2>输出与文件</h2>
+                <p>管理导出位置、应用数据目录和本地空间占用。</p>
               </header>
               <div className="settings-form-group">
                 <label className="settings-input-group" ref={registerFocusTarget("data_dir") as (node: HTMLLabelElement | null) => void}>
@@ -1298,7 +1447,7 @@ export function SettingsPage({
             </section>
           )}
 
-          {activeCategory === "fileManagement" && (
+          {activeCategory === "files" && (
             <section className="settings-category-section">
               <header className="settings-category-header">
                 <h2>文件管理</h2>
@@ -1407,11 +1556,68 @@ export function SettingsPage({
             </section>
           )}
 
-          {activeCategory === "model" && (
+          {activeCategory === "video" && (
             <section className="settings-category-section">
               <header className="settings-category-header">
-                <h2>模型设置</h2>
-                <p>配置转写方式、云端参数和本地模型策略。</p>
+                <h2>视频获取</h2>
+                <p>处理 B 站登录态、下载缓存和转写临时音频。遇到风控、登录或重复下载问题时先看这里。</p>
+              </header>
+              <div className="settings-form-group">
+                <label
+                  className={`settings-input-group settings-focus-target ${activeFocusTarget === "ytdlp_cookies_file" ? "is-highlighted" : ""}`}
+                  ref={registerFocusTarget("ytdlp_cookies_file") as (node: HTMLLabelElement | null) => void}
+                >
+                  <span className="settings-input-label">B 站 Cookies 文件</span>
+                  <div className="settings-input-action-row">
+                    <input
+                      className="settings-input-field"
+                      value={form.ytdlp_cookies_file || ""}
+                      onChange={(e) => updateForm({ ...form, ytdlp_cookies_file: e.target.value })}
+                      placeholder="C:\\Users\\you\\Downloads\\cookies.txt"
+                    />
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      disabled={bilibiliCookieCapturing}
+                      onClick={() => void captureBilibiliLoginCookies()}
+                    >
+                      {bilibiliCookieCapturing ? "获取中..." : "登录获取"}
+                    </button>
+                  </div>
+                  <span className="settings-input-caption">推荐通过提示弹窗打开 B 站登录窗口自动生成；也可以手动填写从已登录浏览器导出的 cookies.txt。</span>
+                  {bilibiliQrcodeImage ? (
+                    <div className="settings-cookie-qrcode">
+                      <img src={bilibiliQrcodeImage} alt="B 站扫码登录二维码" />
+                      <span>用手机 B 站扫码确认后会自动写入 cookies 文件。</span>
+                    </div>
+                  ) : null}
+                  {bilibiliCookieStatus ? <span className="settings-input-caption">{bilibiliCookieStatus}</span> : null}
+                </label>
+                <label className="settings-input-group" ref={registerFocusTarget("enable_cache") as (node: HTMLLabelElement | null) => void}>
+                  <span className="settings-input-label">启用下载缓存</span>
+                  <select className="settings-select-field" value={form.enable_cache ? "true" : "false"} onChange={(e) => updateForm({ ...form, enable_cache: e.target.value === "true" })}>
+                    <option value="true">开启</option>
+                    <option value="false">关闭</option>
+                  </select>
+                  <span className="settings-input-caption">开启后会复用封面、上传文件和部分中间结果，适合反复处理同一批视频。</span>
+                </label>
+                <label className="settings-input-group" ref={registerFocusTarget("preserve_temp_audio") as (node: HTMLLabelElement | null) => void}>
+                  <span className="settings-input-label">保留临时音频</span>
+                  <select className="settings-select-field" value={form.preserve_temp_audio ? "true" : "false"} onChange={(e) => updateForm({ ...form, preserve_temp_audio: e.target.value === "true" })}>
+                    <option value="false">不保留</option>
+                    <option value="true">保留</option>
+                  </select>
+                  <span className="settings-input-caption">排查转写问题时可以临时开启；日常关闭能减少磁盘占用。</span>
+                </label>
+              </div>
+            </section>
+          )}
+
+          {activeCategory === "transcription" && (
+            <section className="settings-category-section">
+              <header className="settings-category-header">
+                <h2>语音转文字</h2>
+                <p>配置视频音频如何转成文本：云端 ASR 更省心，本地 ASR 更依赖运行时和设备。</p>
               </header>
               <div className="settings-form-group">
                 <label className="settings-input-group">
@@ -1442,7 +1648,7 @@ export function SettingsPage({
                       ref={registerFocusTarget("siliconflow_asr_api_key") as (node: HTMLLabelElement | null) => void}
                     >
                       <span className="settings-input-label">SiliconFlow API Key</span>
-                      <input className="settings-input-field" type="password" value={form.siliconflow_asr_api_key} onChange={(e) => updateForm({ ...form, siliconflow_asr_api_key: e.target.value })} placeholder="sk-..." />
+                      <input className="settings-input-field" type="password" value={form.siliconflow_asr_api_key} onFocus={selectMaskedApiKey} onChange={(e) => updateForm({ ...form, siliconflow_asr_api_key: e.target.value })} placeholder="sk-..." />
                       <SiliconFlowApiKeyHelp />
                     </label>
                     <label className="settings-input-group" ref={registerFocusTarget("siliconflow_asr_model") as (node: HTMLLabelElement | null) => void}>
@@ -1494,11 +1700,11 @@ export function SettingsPage({
             </section>
           )}
 
-          {activeCategory === "llm" && (
+          {activeCategory === "generation" && (
             <section className="settings-category-section">
               <header className="settings-category-header">
-                <h2>LLM 设置</h2>
-                <p>分别管理主摘要 LLM 与知识库 LLM。</p>
+                <h2>摘要生成</h2>
+                <p>管理主摘要 LLM、摘要语言、切块策略和思维导图开关。</p>
               </header>
               <div className="settings-form-group">
                 <label className="settings-input-group">
@@ -1546,7 +1752,7 @@ export function SettingsPage({
                       ref={registerFocusTarget("llm_api_key") as (node: HTMLLabelElement | null) => void}
                     >
                       <span className="settings-input-label">API Key</span>
-                      <input className="settings-input-field" type="password" value={form.llm_api_key} onChange={(e) => updateForm({ ...form, llm_api_key: e.target.value })} placeholder="sk-..." />
+                      <input className="settings-input-field" type="password" value={form.llm_api_key} onFocus={selectMaskedApiKey} onChange={(e) => updateForm({ ...form, llm_api_key: e.target.value })} placeholder="sk-..." />
                       <span className="settings-input-caption">LLM 服务的 API 密钥</span>
                     </label>
                     <label
@@ -1706,6 +1912,7 @@ export function SettingsPage({
                             type="password"
                             value={form.knowledge_llm_api_key}
                             disabled={!form.knowledge_enabled}
+                            onFocus={selectMaskedApiKey}
                             onChange={(e) => updateForm({ ...form, knowledge_llm_api_key: e.target.value })}
                             placeholder="sk-..."
                           />
@@ -1742,11 +1949,11 @@ export function SettingsPage({
             </section>
           )}
 
-          {activeCategory === "summary" && (
+          {activeCategory === "generation" && (
             <section className="settings-category-section">
               <header className="settings-category-header">
-                <h2>摘要参数</h2>
-                <p>摘要生成算法参数配置。</p>
+                <h2>摘要细节</h2>
+                <p>控制摘要模式、输出语言、长视频切块和失败重试。</p>
               </header>
               <div className="settings-form-group">
                 <label className="settings-input-group" ref={registerFocusTarget("summary_mode") as (node: HTMLLabelElement | null) => void}>
@@ -1779,6 +1986,17 @@ export function SettingsPage({
                   <input className="settings-input-field" type="number" min={1} value={form.summary_chunk_retry_count} onChange={(e) => updateForm({ ...form, summary_chunk_retry_count: parseMinOneInt(e.target.value, 2) })} />
                   <span className="settings-input-caption">API 调用失败时的重试次数</span>
                 </label>
+              </div>
+            </section>
+          )}
+
+          {activeCategory === "prompts" && (
+            <section className="settings-category-section">
+              <header className="settings-category-header">
+                <h2>提示词</h2>
+                <p>这里属于高级个性化区域。想改变知识笔记风格时再调整，日常使用保持默认即可。</p>
+              </header>
+              <div className="settings-form-group">
                 <label className="settings-input-group" ref={registerFocusTarget("knowledge_note_system_prompt") as (node: HTMLLabelElement | null) => void}>
                   <span className="settings-input-label">知识笔记 System Prompt</span>
                   <textarea
@@ -1865,11 +2083,11 @@ export function SettingsPage({
             </section>
           )}
 
-          {activeCategory === "advanced" && (
+          {activeCategory === "performance" && (
             <section className="settings-category-section">
               <header className="settings-category-header">
-                <h2>高级设置</h2>
-                <p>CUDA 变体和运行时配置。</p>
+                <h2>资源策略</h2>
+                <p>根据机器和任务规模调整 CUDA 版本、运行时通道和缓存策略。</p>
               </header>
               <div className="settings-form-group">
                 <label className="settings-input-group" ref={registerFocusTarget("cuda_variant") as (node: HTMLLabelElement | null) => void}>
@@ -1890,38 +2108,11 @@ export function SettingsPage({
                     <option value="gpu-cu124">GPU CUDA12.4</option>
                   </select>
                 </label>
-                <label className="settings-input-group" ref={registerFocusTarget("preserve_temp_audio") as (node: HTMLLabelElement | null) => void}>
-                  <span className="settings-input-label">保留临时音频</span>
-                  <select className="settings-select-field" value={form.preserve_temp_audio ? "true" : "false"} onChange={(e) => updateForm({ ...form, preserve_temp_audio: e.target.value === "true" })}>
-                    <option value="false">不保留</option>
-                    <option value="true">保留</option>
-                  </select>
-                </label>
-                <label className="settings-input-group" ref={registerFocusTarget("enable_cache") as (node: HTMLLabelElement | null) => void}>
-                  <span className="settings-input-label">启用缓存</span>
-                  <select className="settings-select-field" value={form.enable_cache ? "true" : "false"} onChange={(e) => updateForm({ ...form, enable_cache: e.target.value === "true" })}>
-                    <option value="true">开启</option>
-                    <option value="false">关闭</option>
-                  </select>
-                </label>
-                <label
-                  className={`settings-input-group settings-focus-target ${activeFocusTarget === "ytdlp_cookies_file" ? "is-highlighted" : ""}`}
-                  ref={registerFocusTarget("ytdlp_cookies_file") as (node: HTMLLabelElement | null) => void}
-                >
-                  <span className="settings-input-label">yt-dlp Cookies 文件</span>
-                  <input
-                    className="settings-input-field"
-                    value={form.ytdlp_cookies_file || ""}
-                    onChange={(e) => updateForm({ ...form, ytdlp_cookies_file: e.target.value })}
-                    placeholder="C:\\Users\\you\\Downloads\\cookies.txt"
-                  />
-                  <span className="settings-input-caption">推荐通过提示弹窗打开 B 站登录窗口自动生成；也可以手动填写从已登录浏览器导出的 B 站 cookies.txt。</span>
-                </label>
               </div>
             </section>
           )}
 
-          {activeCategory === "environment" && (
+          {activeCategory === "runtime" && (
             <section className="settings-category-section">
               <header className="settings-category-header">
                 <h2>运行环境</h2>

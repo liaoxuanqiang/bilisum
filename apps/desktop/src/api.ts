@@ -43,6 +43,29 @@ export type AppUpdateInfo = {
   errorMessage: string | null;
 };
 
+export type LlmTestPayload = Partial<ServiceSettings> & {
+  llm_test_scope?: "main" | "knowledge";
+};
+
+export type BilibiliCookieCaptureResponse = {
+  cookiesFile: string;
+  cookieCount: number;
+  browser?: string;
+};
+
+export type BilibiliQrcodeLoginResponse = {
+  url: string;
+  qrcodeKey: string;
+  expiresIn: number;
+};
+
+export type BilibiliQrcodePollResponse = {
+  status: "pending" | "scanned" | "expired" | "confirmed";
+  message: string;
+  cookiesFile?: string;
+  cookieCount?: number;
+};
+
 export class AuthRequiredError extends Error {
   constructor(message = "需要输入 BiliSum 访问密钥。") {
     super(message);
@@ -158,7 +181,7 @@ export const api = {
       body: JSON.stringify(payload),
     });
   },
-  testLlmConnection(payload: Partial<ServiceSettings>) {
+  testLlmConnection(payload: LlmTestPayload) {
     return fetchJson<LlmTestResponse>("/api/v1/llm/test", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -171,6 +194,19 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+  },
+  captureBilibiliCookiesFromBrowser() {
+    return fetchJson<BilibiliCookieCaptureResponse>("/api/v1/bilibili/cookies/capture", {
+      method: "POST",
+    });
+  },
+  createBilibiliCookieQrcode() {
+    return fetchJson<BilibiliQrcodeLoginResponse>("/api/v1/bilibili/cookies/qrcode", {
+      method: "POST",
+    });
+  },
+  pollBilibiliCookieQrcode(qrcodeKey: string) {
+    return fetchJson<BilibiliQrcodePollResponse>(`/api/v1/bilibili/cookies/qrcode/${encodeURIComponent(qrcodeKey)}`);
   },
   getSystemLogs(lines = 200) {
     return fetchJson<SystemLogResponse>(`/api/v1/system/logs?lines=${lines}`);

@@ -20,6 +20,11 @@ from video_sum_infra.runtime import (
     service_log_path,
 )
 
+from video_sum_service.bilibili_cookies import (
+    capture_bilibili_cookies_from_browser,
+    create_bilibili_login_qrcode,
+    poll_bilibili_login_qrcode,
+)
 from video_sum_service.context import access_token_manager, app_info, logger, settings_manager
 from video_sum_service.integrations import (
     extract_http_error_detail,
@@ -234,6 +239,30 @@ def post_llm_test(payload: SettingsUpdatePayload | None = None) -> dict[str, obj
 @router.post("/asr/test")
 def post_asr_test(payload: SettingsUpdatePayload | None = None) -> dict[str, object]:
     return probe_asr_connection(payload)
+
+
+@router.post("/bilibili/cookies/capture")
+def post_bilibili_cookies_capture() -> dict[str, object]:
+    try:
+        return capture_bilibili_cookies_from_browser()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/bilibili/cookies/qrcode")
+def post_bilibili_cookies_qrcode() -> dict[str, object]:
+    try:
+        return create_bilibili_login_qrcode()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/bilibili/cookies/qrcode/{qrcode_key}")
+def get_bilibili_cookies_qrcode(qrcode_key: str) -> dict[str, object]:
+    try:
+        return poll_bilibili_login_qrcode(qrcode_key)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/environment")
