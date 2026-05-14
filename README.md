@@ -449,6 +449,7 @@ uv sync --python 3.12 --all-packages
 
 MIT License © 2026 Lycohana
 
+特别致谢：[Linux Do](https://linux.do)
 
 <div align="center">
   <sub>Built with ❤️ by Lycohana</sub>
