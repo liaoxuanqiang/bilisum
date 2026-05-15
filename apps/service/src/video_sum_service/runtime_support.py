@@ -350,7 +350,7 @@ def torch_install_with_fallbacks(
         except subprocess.CalledProcessError as exc:
             attempts.append((label, exc))
 
-    raise HTTPException(status_code=500, detail=pip_install_error_detail("CUDA 运行时依赖", attempts))
+    raise HTTPException(status_code=500, detail=pip_install_error_detail("CUDA 运行环境依赖", attempts))
 
 
 def ensure_runtime_pip(python_executable: Path, runtime_channel: str) -> None:
@@ -958,6 +958,7 @@ def serialize_settings(
         "llm_api_key_configured": bool(current_settings.llm_api_key),
         "knowledge_llm_mode": current_settings.knowledge_llm_mode,
         "knowledge_llm_enabled": current_settings.knowledge_llm_enabled,
+        "knowledge_llm_provider": current_settings.knowledge_llm_provider,
         "knowledge_llm_base_url": current_settings.knowledge_llm_base_url,
         "knowledge_llm_model": current_settings.knowledge_llm_model,
         "knowledge_llm_api_key": "",
