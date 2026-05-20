@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type MouseEvent } from "react";
 
+import { api } from "../api";
 import type { ConfigHealth } from "../appModel";
 import { platformLabel } from "../appModel";
 import { LinkIcon, LocalVideoIcon } from "../components/AppIcons";
 import { FloatingNoticeStack } from "../components/FloatingNoticeStack";
 import { VideoCard } from "../components/VideoCard";
-import type { VideoAssetSummary } from "../types";
+import type { PromptPreset, VideoAssetSummary } from "../types";
 import { formatDuration } from "../utils";
 
 type HomePageProps = {
@@ -16,9 +17,13 @@ type HomePageProps = {
   submitStatus: string;
   onProbe(event: FormEvent): Promise<void>;
   onImportLocalVideo(): Promise<void>;
+  onImportLocalFiles(files: File[]): Promise<void>;
   canImportLocalVideo: boolean;
+  promptRouterMode: string;
+  onPromptRouterModeChange(mode: "auto" | "confirm"): Promise<void>;
   onOpenSetupAssistant(issueKey?: string): void;
   onOpenConfigIssue(issueKey: string): void;
+  onEditPromptPreset(presetId: string): void;
   favoriteVideos: VideoAssetSummary[];
   recentVideos: VideoAssetSummary[];
   onToggleFavorite(videoId: string, nextFavorite: boolean): Promise<void>;
@@ -31,6 +36,27 @@ type SummaryPreference = {
 
 const SUMMARY_PREFERENCE_STORAGE_KEY = "bilisum.summaryPreference";
 const PREFERENCE_HINT_SEEN_KEY = "bilisum.summaryPreferenceHintSeen";
+const PROMPT_PRESET_STORAGE_KEY = "bilisum.promptPresetId";
+const HIDDEN_PROMPT_PRESETS_STORAGE_KEY = "bilisum.hiddenPromptPresetIds";
+const SUPPORTED_LOCAL_MEDIA_EXTENSIONS = new Set([
+  ".mp4",
+  ".mov",
+  ".mkv",
+  ".avi",
+  ".wmv",
+  ".webm",
+  ".flv",
+  ".m4v",
+  ".ts",
+  ".mpeg",
+  ".mpg",
+  ".mp3",
+  ".wav",
+  ".m4a",
+  ".aac",
+  ".flac",
+  ".ogg",
+]);
 const DEFAULT_SUMMARY_PREFERENCE: SummaryPreference = {
   noteMode: "text",
   generateMindmap: false,
@@ -55,6 +81,78 @@ function loadSummaryPreference(): SummaryPreference {
   }
 }
 
+function loadHiddenPromptPresetIds() {
+  if (typeof window === "undefined") {
+    return new Set<string>();
+  }
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(HIDDEN_PROMPT_PRESETS_STORAGE_KEY) || "[]") as unknown;
+    return new Set(Array.isArray(parsed) ? parsed.map((item) => String(item)).filter(Boolean) : []);
+  } catch {
+    return new Set<string>();
+  }
+}
+function loadPromptPresetId() {
+  if (typeof window === "undefined") {
+    return "general";
+  }
+  return window.localStorage.getItem(PROMPT_PRESET_STORAGE_KEY) || "general";
+}
+
+function isSupportedLocalMediaFile(file: File) {
+  const lowerName = file.name.toLowerCase();
+  const dotIndex = lowerName.lastIndexOf(".");
+  if (dotIndex < 0) {
+    return false;
+  }
+  return SUPPORTED_LOCAL_MEDIA_EXTENSIONS.has(lowerName.slice(dotIndex));
+}
+
+type DragDropZoneProps = {
+  isActive: boolean;
+  onDragOver(event: DragEvent<HTMLDivElement>): void;
+  onDragLeave(event: DragEvent<HTMLDivElement>): void;
+  onDrop(event: DragEvent<HTMLDivElement>): void;
+  onPaste(event: ClipboardEvent<HTMLDivElement>): void;
+  onImportLocalVideo(): Promise<void>;
+};
+
+function DragDropZone({
+  isActive,
+  onDragOver,
+  onDragLeave,
+  onDrop,
+  onPaste,
+  onImportLocalVideo,
+}: DragDropZoneProps) {
+  return (
+    <div
+      className={`drag-drop-zone ${isActive ? "is-active" : ""}`}
+      role="button"
+      tabIndex={0}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+      onPaste={onPaste}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          void onImportLocalVideo();
+        }
+      }}
+    >
+      <LocalVideoIcon />
+      <div>
+        <strong>拖入本地视频或音频</strong>
+        <span>支持批量导入，也可以粘贴剪贴板文件。</span>
+      </div>
+      <button className="secondary-button" type="button" onClick={() => void onImportLocalVideo()}>
+        选择文件
+      </button>
+    </div>
+  );
+}
+
 export function HomePage({
   configHealth,
   probePreview,
@@ -63,14 +161,19 @@ export function HomePage({
   submitStatus,
   onProbe,
   onImportLocalVideo,
+  onImportLocalFiles,
   canImportLocalVideo,
+  promptRouterMode,
+  onPromptRouterModeChange,
   onOpenSetupAssistant,
   onOpenConfigIssue,
+  onEditPromptPreset,
   favoriteVideos,
   recentVideos,
   onToggleFavorite,
 }: HomePageProps) {
   const preferenceMenuRef = useRef<HTMLDivElement | null>(null);
+  const promptMenuRef = useRef<HTMLDivElement | null>(null);
   const [summaryPreference, setSummaryPreference] = useState<SummaryPreference>(() => loadSummaryPreference());
   const [preferenceMenuOpen, setPreferenceMenuOpen] = useState(false);
   const [preferenceHintDismissed, setPreferenceHintDismissed] = useState(() => {
@@ -79,10 +182,93 @@ export function HomePage({
     }
     return true;
   });
+  const [promptPresets, setPromptPresets] = useState<PromptPreset[]>([]);
+  const [hiddenPromptPresetIds, setHiddenPromptPresetIds] = useState<Set<string>>(() => loadHiddenPromptPresetIds());
+  const [promptPresetId, setPromptPresetId] = useState(() => loadPromptPresetId());
+  const [recommendedPromptId, setRecommendedPromptId] = useState<string | null>(null);
+  const [promptContextMenu, setPromptContextMenu] = useState<{ x: number; y: number; presetId: string } | null>(null);
+  const [promptLoading, setPromptLoading] = useState(false);
+  const [promptStatus, setPromptStatus] = useState("");
+  const [promptModeSaving, setPromptModeSaving] = useState(false);
+  const [isDragActive, setIsDragActive] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [batchUploading, setBatchUploading] = useState(false);
 
   useEffect(() => {
     window.localStorage.setItem(SUMMARY_PREFERENCE_STORAGE_KEY, JSON.stringify(summaryPreference));
   }, [summaryPreference]);
+
+  useEffect(() => {
+    window.localStorage.setItem(PROMPT_PRESET_STORAGE_KEY, promptPresetId);
+  }, [promptPresetId]);
+
+  useEffect(() => {
+    let disposed = false;
+    async function loadPromptPresets() {
+      setPromptLoading(true);
+      try {
+        const presets = await api.listPromptPresets();
+        if (disposed) {
+          return;
+        }
+        setPromptPresets(presets);
+      } catch (error) {
+        if (!disposed) {
+          setPromptStatus(error instanceof Error ? error.message : "Prompt 加载失败");
+        }
+      } finally {
+        if (!disposed) {
+          setPromptLoading(false);
+        }
+      }
+    }
+    void loadPromptPresets();
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    function handlePromptVisibilityChanged() {
+      setHiddenPromptPresetIds(loadHiddenPromptPresetIds());
+    }
+    window.addEventListener("bilisum:prompt-presets-visibility-changed", handlePromptVisibilityChanged);
+    window.addEventListener("storage", handlePromptVisibilityChanged);
+    return () => {
+      window.removeEventListener("bilisum:prompt-presets-visibility-changed", handlePromptVisibilityChanged);
+      window.removeEventListener("storage", handlePromptVisibilityChanged);
+    };
+  }, []);
+
+  useEffect(() => {
+    const visiblePresets = promptPresets.filter((preset) => !hiddenPromptPresetIds.has(preset.id));
+    if (visiblePresets.length && (!promptPresetId || !visiblePresets.some((preset) => preset.id === promptPresetId))) {
+      setPromptPresetId(visiblePresets[0]?.id || "general");
+    }
+  }, [hiddenPromptPresetIds, promptPresetId, promptPresets]);
+
+  useEffect(() => {
+    const title = probeUrl.trim();
+    if (!title) {
+      setRecommendedPromptId(null);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void api.matchPrompt(title).then((result) => {
+        if (hiddenPromptPresetIds.has(result.preset.id)) {
+          setRecommendedPromptId(null);
+          return;
+        }
+        setRecommendedPromptId(result.preset.id);
+        if (promptRouterMode === "auto") {
+          setPromptPresetId(result.preset.id);
+        }
+      }).catch(() => {
+        setRecommendedPromptId(null);
+      });
+    }, 360);
+    return () => window.clearTimeout(timer);
+  }, [hiddenPromptPresetIds, probeUrl, promptRouterMode]);
 
   const showPreferenceHint = preferenceMenuOpen && !preferenceHintDismissed;
 
@@ -98,7 +284,7 @@ export function HomePage({
       return;
     }
 
-    function handlePointerDown(event: MouseEvent) {
+    function handlePointerDown(event: globalThis.MouseEvent) {
       if (preferenceMenuRef.current?.contains(event.target as Node)) {
         return;
       }
@@ -119,9 +305,144 @@ export function HomePage({
     };
   }, [preferenceMenuOpen]);
 
+  useEffect(() => {
+    if (!promptContextMenu) {
+      return;
+    }
+
+    function handlePointerDown(event: globalThis.MouseEvent) {
+      if (promptMenuRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      setPromptContextMenu(null);
+    }
+
+    function closePromptContextMenu() {
+      setPromptContextMenu(null);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setPromptContextMenu(null);
+      }
+    }
+
+    window.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("scroll", closePromptContextMenu, true);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("scroll", closePromptContextMenu, true);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [promptContextMenu]);
+
   function updateSummaryPreference(nextPreference: SummaryPreference) {
     setSummaryPreference(nextPreference);
   }
+
+  function updatePromptPreset(nextPresetId: string) {
+    setPromptPresetId(nextPresetId || "general");
+    setPromptStatus("");
+    setPromptContextMenu(null);
+  }
+
+  function openPromptContextMenu(event: MouseEvent<HTMLElement>) {
+    if (!selectedPrompt) {
+      return;
+    }
+    event.preventDefault();
+    setPromptContextMenu({ x: event.clientX, y: event.clientY, presetId: selectedPrompt.id });
+  }
+
+  function editSelectedPromptPreset() {
+    if (!promptContextMenu?.presetId) {
+      return;
+    }
+    onEditPromptPreset(promptContextMenu.presetId);
+    setPromptContextMenu(null);
+  }
+
+  async function changePromptRouterMode(mode: "auto" | "confirm") {
+    if (mode === promptRouterMode || promptModeSaving) {
+      return;
+    }
+    setPromptModeSaving(true);
+    setPromptStatus(mode === "auto" ? "正在启用 AI 场景识别..." : "正在切换为手动选择...");
+    try {
+      await onPromptRouterModeChange(mode);
+      setPromptStatus(mode === "auto" ? "已启用 AI 场景识别，会根据标题自动选择摘要提示词。" : "已切换为手动选择 Prompt。");
+    } catch (error) {
+      setPromptStatus(error instanceof Error ? error.message : "Prompt 模式保存失败");
+    } finally {
+      setPromptModeSaving(false);
+    }
+  }
+
+  function collectMediaFiles(files: Iterable<File>) {
+    return Array.from(files).filter(isSupportedLocalMediaFile);
+  }
+
+  function openBatchConfirm(files: File[]) {
+    if (!files.length) {
+      setPromptStatus("未识别到可导入的媒体文件");
+      return;
+    }
+    setPendingFiles(files);
+    setPromptStatus("");
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    setIsDragActive(false);
+    if (!canImportLocalVideo) {
+      return;
+    }
+    openBatchConfirm(collectMediaFiles(event.dataTransfer.files));
+  }
+
+  function handleDragOver(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    if (canImportLocalVideo) {
+      setIsDragActive(true);
+    }
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLDivElement>) {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      setIsDragActive(false);
+    }
+  }
+
+  function handlePaste(event: ClipboardEvent<HTMLDivElement>) {
+    if (!canImportLocalVideo) {
+      return;
+    }
+    const files = collectMediaFiles(Array.from(event.clipboardData.files));
+    if (!files.length) {
+      return;
+    }
+    event.preventDefault();
+    openBatchConfirm(files);
+  }
+
+  async function confirmBatchImport() {
+    if (!pendingFiles.length) {
+      return;
+    }
+    setBatchUploading(true);
+    try {
+      await onImportLocalFiles(pendingFiles);
+      setPendingFiles([]);
+    } finally {
+      setBatchUploading(false);
+    }
+  }
+
+  const selectablePromptPresets = promptPresets.filter((preset) => !hiddenPromptPresetIds.has(preset.id));
+  const selectedPrompt = selectablePromptPresets.find((preset) => preset.id === promptPresetId) || selectablePromptPresets[0] || null;
+  const recommendedPrompt = selectablePromptPresets.find((preset) => preset.id === recommendedPromptId) || null;
+  const promptModeLabel = promptRouterMode === "auto" ? "AI 识别场景" : "手动选择";
 
   return (
     <section className="home-page">
@@ -223,7 +544,105 @@ export function HomePage({
               ) : null}
             </div>
           </div>
+          <div className="home-prompt-row" onPaste={handlePaste} onContextMenu={openPromptContextMenu}>
+            <label className="home-prompt-selector">
+              <span className="home-prompt-label">Prompt</span>
+              <select
+                className="select-field home-prompt-select"
+                value={selectedPrompt?.id || promptPresetId}
+                disabled={promptLoading || !selectablePromptPresets.length}
+                onChange={(event) => updatePromptPreset(event.target.value)}
+              >
+                {selectablePromptPresets.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="home-prompt-meta">
+              <div className="home-prompt-mode" role="group" aria-label="Prompt 模式选择">
+                <button
+                  className={`home-prompt-mode-option ${promptRouterMode !== "auto" ? "is-active" : ""}`}
+                  type="button"
+                  disabled={promptModeSaving}
+                  onClick={() => void changePromptRouterMode("confirm")}
+                >
+                  手动选择
+                </button>
+                <button
+                  className={`home-prompt-mode-option ${promptRouterMode === "auto" ? "is-active" : ""}`}
+                  type="button"
+                  disabled={promptModeSaving}
+                  onClick={() => void changePromptRouterMode("auto")}
+                >
+                  AI 识别场景
+                </button>
+              </div>
+              <span className="helper-chip">模式 {promptModeLabel}</span>
+              {recommendedPrompt ? (
+                <button
+                  className="home-prompt-recommendation"
+                  type="button"
+                  onClick={() => updatePromptPreset(recommendedPrompt.id)}
+                >
+                  推荐：{recommendedPrompt.name}
+                </button>
+              ) : null}
+              {selectedPrompt?.description ? (
+                <span className="home-prompt-description">{selectedPrompt.description}</span>
+              ) : null}
+            </div>
+            {promptContextMenu ? (
+              <div
+                className="home-prompt-context-menu"
+                ref={promptMenuRef}
+                role="menu"
+                style={{ left: promptContextMenu.x, top: promptContextMenu.y }}
+              >
+                <button type="button" role="menuitem" onClick={editSelectedPromptPreset}>
+                  编辑
+                </button>
+              </div>
+            ) : null}
+          </div>
         </form>
+
+        {canImportLocalVideo ? (
+          <DragDropZone
+            isActive={isDragActive}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onPaste={handlePaste}
+            onImportLocalVideo={onImportLocalVideo}
+          />
+        ) : null}
+
+        {pendingFiles.length ? (
+          <div className="batch-import-panel" role="dialog" aria-modal="false" aria-label="确认批量导入">
+            <div className="batch-import-head">
+              <strong>确认导入 {pendingFiles.length} 个文件</strong>
+              <button className="close-button" type="button" aria-label="取消批量导入" onClick={() => setPendingFiles([])}>
+                ×
+              </button>
+            </div>
+            <div className="batch-import-list">
+              {pendingFiles.map((file) => (
+                <span key={`${file.name}-${file.size}`}>{file.name}</span>
+              ))}
+            </div>
+            <div className="batch-import-actions">
+              <button className="secondary-button" type="button" disabled={batchUploading} onClick={() => setPendingFiles([])}>
+                取消
+              </button>
+              <button className="primary-button" type="button" disabled={batchUploading} onClick={() => void confirmBatchImport()}>
+                {batchUploading ? "导入中..." : "开始导入"}
+              </button>
+            </div>
+          </div>
+        ) : null}
+        {promptStatus ? <div className="detail-error-banner" role="status">{promptStatus}</div> : null}
 
         {configHealth.checked && !configHealth.isConfigured ? (
           <article className={`config-alert-card tone-${configHealth.state}`}>
