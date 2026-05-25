@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -374,18 +375,19 @@ def test_install_knowledge_dependencies_refreshes_environment(monkeypatch, tmp_p
     app.state.task_repository = object()
     app.state.task_worker = object()
 
-    monkeypatch.setattr("video_sum_service.app._uses_current_service_python", lambda runtime_channel: False)
-    monkeypatch.setattr("video_sum_service.app.ensure_runtime_channel", lambda runtime_channel: tmp_path / runtime_channel)
-    monkeypatch.setattr("video_sum_service.app.runtime_python_executable", lambda runtime_channel: tmp_path / "python.exe")
-    monkeypatch.setattr("video_sum_service.app._install_workspace_packages", lambda python_executable, runtime_channel: None)
-    monkeypatch.setattr("video_sum_service.app._ensure_runtime_pip", lambda python_executable, runtime_channel: None)
+    monkeypatch.setattr(runtime_support, "uses_current_service_python", lambda runtime_channel: False)
+    monkeypatch.setattr(runtime_support, "ensure_runtime_channel", lambda runtime_channel: tmp_path / runtime_channel)
+    monkeypatch.setattr(runtime_support, "runtime_python_executable", lambda runtime_channel: tmp_path / "python.exe")
+    monkeypatch.setattr(runtime_support, "ensure_runtime_pip", lambda python_executable, runtime_channel: None)
     monkeypatch.setattr(
-        "video_sum_service.app._run_command",
+        runtime_support,
+        "run_command",
         lambda command, runtime_channel, timeout=1800: type("Result", (), {"stdout": "ok", "stderr": ""})(),
     )
-    monkeypatch.setattr("video_sum_service.app.clear_environment_probe_cache", lambda runtime_channel=None: None)
+    monkeypatch.setattr(runtime_support, "clear_environment_probe_cache", lambda runtime_channel=None: None)
     monkeypatch.setattr(
-        "video_sum_service.app.detect_environment",
+        runtime_support,
+        "detect_environment",
         lambda runtime_channel=None: {
             "runtimeChannel": runtime_channel or "base",
             "chromadbInstalled": True,
@@ -396,13 +398,14 @@ def test_install_knowledge_dependencies_refreshes_environment(monkeypatch, tmp_p
         },
     )
     monkeypatch.setattr(
-        "video_sum_service.app.build_worker",
+        runtime_support,
+        "build_worker",
         lambda repository, current_settings, environment_info=None: {
             "repository": repository,
             "environment": environment_info,
         },
     )
-    monkeypatch.setattr("video_sum_service.app.write_runtime_metadata", lambda runtime_channel, payload: None)
+    monkeypatch.setattr(runtime_support, "write_runtime_metadata", lambda runtime_channel, payload: None)
 
     response = install_knowledge_dependencies()
 
@@ -474,6 +477,70 @@ def test_detect_environment_uses_persisted_cache(monkeypatch, tmp_path: Path) ->
 
     assert environment["cudaAvailable"] is True
     assert environment["localAsrAvailable"] is True
+
+
+def test_detect_environment_requires_importable_knowledge_dependencies(monkeypatch, tmp_path: Path) -> None:
+    current = ServiceSettings(
+        cache_dir=tmp_path / "cache",
+        runtime_channel="base",
+    )
+    current.cache_dir.mkdir(parents=True)
+    runtime_support._environment_probe_cache.clear()
+    runtime_support._environment_probe_failures.clear()
+    monkeypatch.setattr(runtime_support.settings_manager, "_settings", current)
+    monkeypatch.setattr(runtime_support, "uses_current_service_python", lambda runtime_channel: True)
+
+    def fake_run_host_command(command, timeout=120):
+        script = command[-1]
+        shim = """
+import builtins
+import importlib.metadata
+import sys
+import types
+
+real_import = builtins.__import__
+
+def fake_version(name):
+    versions = {
+        "yt-dlp": "2025.1.1",
+        "chromadb": "1.0.0",
+        "sentence-transformers": "3.0.0",
+    }
+    if name in versions:
+        return versions[name]
+    raise importlib.metadata.PackageNotFoundError(name)
+
+def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "torch":
+        raise ImportError("torch missing")
+    if name == "chromadb":
+        raise ImportError("chromadb broken")
+    if name == "sentence_transformers":
+        module = types.ModuleType(name)
+        sys.modules[name] = module
+        return module
+    return real_import(name, globals, locals, fromlist, level)
+
+importlib.metadata.version = fake_version
+builtins.__import__ = fake_import
+"""
+        return subprocess.run(
+            [sys.executable, "-c", shim + "\n" + script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        )
+
+    monkeypatch.setattr(runtime_support, "run_host_command", fake_run_host_command)
+
+    environment = runtime_support.detect_environment("base")
+
+    assert environment["chromadbInstalled"] is False
+    assert environment["chromadbVersion"] == ""
+    assert environment["sentenceTransformersInstalled"] is True
+    assert environment["sentenceTransformersVersion"] == "3.0.0"
+    assert environment["knowledgeDependenciesReady"] is False
 
 
 def test_install_workspace_packages_bootstraps_hatchling_before_local_packages(

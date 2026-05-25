@@ -1,12 +1,15 @@
 from pathlib import Path
 import sys
 
+import pytest
+
 import video_sum_infra.runtime as runtime_module
 from video_sum_infra.config import ServiceSettings
 from video_sum_infra.runtime import (
     activate_runtime_pythonpath,
     activate_runtime_dll_directories,
     app_data_root,
+    bootstrap_managed_runtime,
     default_host,
     read_runtime_metadata,
     web_static_dir,
@@ -88,6 +91,140 @@ def test_write_runtime_metadata_merges_existing_payload(monkeypatch, tmp_path: P
     assert metadata["appVersion"] == "1.0.0"
     assert metadata["cudaVariant"] == "cu128"
     assert metadata["localAsrInstalled"] is True
+
+
+def test_bootstrap_base_runtime_refresh_preserves_user_installed_packages(monkeypatch, tmp_path: Path) -> None:
+    app_root = tmp_path / "app"
+    seed_dir = app_root / "runtime" / "base"
+    runtime_dir = tmp_path / "data" / "runtime" / "base"
+    seed_site_packages = seed_dir / "Lib" / "site-packages"
+    runtime_site_packages = runtime_dir / "Lib" / "site-packages"
+    seed_site_packages.mkdir(parents=True)
+    runtime_site_packages.mkdir(parents=True)
+    (seed_dir / "python.exe").write_text("seed-python", encoding="utf-8")
+    (runtime_dir / "python.exe").write_text("old-python", encoding="utf-8")
+    (seed_dir / "video_sum_runtime.json").write_text(
+        '{"appVersion":"1.17.0","runtimeLayout":"portable-cpython","pythonVersion":"3.12.0"}',
+        encoding="utf-8",
+    )
+    (runtime_dir / "video_sum_runtime.json").write_text(
+        '{"appVersion":"1.15.0","runtimeLayout":"portable-cpython","pythonVersion":"3.12.0"}',
+        encoding="utf-8",
+    )
+    (seed_site_packages / "video_sum_service").mkdir()
+    (seed_site_packages / "video_sum_service" / "__init__.py").write_text("new", encoding="utf-8")
+    (runtime_site_packages / "video_sum_service").mkdir()
+    (runtime_site_packages / "video_sum_service" / "__init__.py").write_text("old", encoding="utf-8")
+    (runtime_site_packages / "chromadb").mkdir()
+    (runtime_site_packages / "chromadb" / "__init__.py").write_text("user chroma", encoding="utf-8")
+    (runtime_site_packages / "chromadb-1.0.0.dist-info").mkdir()
+    (runtime_site_packages / "sentence_transformers").mkdir()
+    (runtime_site_packages / "sentence_transformers" / "__init__.py").write_text("user st", encoding="utf-8")
+    (runtime_site_packages / "sentence_transformers-3.0.0.dist-info").mkdir()
+
+    monkeypatch.setattr(runtime_module, "is_frozen", lambda: True)
+    monkeypatch.setattr(runtime_module, "bundled_runtime_seed_dir", lambda: seed_dir)
+    monkeypatch.setattr(runtime_module, "runtime_seed_available", lambda: True)
+    monkeypatch.setattr(runtime_module, "managed_runtime_dir", lambda runtime_channel: runtime_dir)
+    monkeypatch.setattr(
+        runtime_module,
+        "runtime_python_executable",
+        lambda runtime_channel: runtime_dir / "python.exe" if (runtime_dir / "python.exe").exists() else None,
+    )
+
+    assert bootstrap_managed_runtime("base") == runtime_dir
+
+    assert (runtime_dir / "python.exe").read_text(encoding="utf-8") == "seed-python"
+    assert (runtime_site_packages / "video_sum_service" / "__init__.py").read_text(encoding="utf-8") == "new"
+    assert (runtime_site_packages / "chromadb" / "__init__.py").read_text(encoding="utf-8") == "user chroma"
+    assert (runtime_site_packages / "chromadb-1.0.0.dist-info").exists()
+    assert (runtime_site_packages / "sentence_transformers" / "__init__.py").read_text(encoding="utf-8") == "user st"
+
+
+def test_bootstrap_base_runtime_refresh_does_not_preserve_packaging_metadata(monkeypatch, tmp_path: Path) -> None:
+    seed_dir = tmp_path / "app" / "runtime" / "base"
+    runtime_dir = tmp_path / "data" / "runtime" / "base"
+    seed_site_packages = seed_dir / "Lib" / "site-packages"
+    runtime_site_packages = runtime_dir / "Lib" / "site-packages"
+    seed_site_packages.mkdir(parents=True)
+    runtime_site_packages.mkdir(parents=True)
+    (seed_dir / "python.exe").write_text("seed-python", encoding="utf-8")
+    (runtime_dir / "python.exe").write_text("old-python", encoding="utf-8")
+    (seed_dir / "video_sum_runtime.json").write_text(
+        '{"appVersion":"1.17.0","runtimeLayout":"portable-cpython","pythonVersion":"3.12.0"}',
+        encoding="utf-8",
+    )
+    (runtime_dir / "video_sum_runtime.json").write_text(
+        '{"appVersion":"1.15.0","runtimeLayout":"portable-cpython","pythonVersion":"3.12.0"}',
+        encoding="utf-8",
+    )
+    (runtime_site_packages / "pip").mkdir()
+    (runtime_site_packages / "pip-25.0.1.dist-info").mkdir()
+    (runtime_site_packages / "setuptools-75.8.0.dist-info").mkdir()
+    (runtime_site_packages / "wheel-0.45.1.dist-info").mkdir()
+
+    monkeypatch.setattr(runtime_module, "is_frozen", lambda: True)
+    monkeypatch.setattr(runtime_module, "bundled_runtime_seed_dir", lambda: seed_dir)
+    monkeypatch.setattr(runtime_module, "runtime_seed_available", lambda: True)
+    monkeypatch.setattr(runtime_module, "managed_runtime_dir", lambda runtime_channel: runtime_dir)
+    monkeypatch.setattr(
+        runtime_module,
+        "runtime_python_executable",
+        lambda runtime_channel: runtime_dir / "python.exe" if (runtime_dir / "python.exe").exists() else None,
+    )
+
+    assert bootstrap_managed_runtime("base") == runtime_dir
+
+    assert not (runtime_site_packages / "pip").exists()
+    assert not (runtime_site_packages / "pip-25.0.1.dist-info").exists()
+    assert not (runtime_site_packages / "setuptools-75.8.0.dist-info").exists()
+    assert not (runtime_site_packages / "wheel-0.45.1.dist-info").exists()
+
+
+def test_bootstrap_base_runtime_refresh_restores_previous_runtime_when_copy_fails(monkeypatch, tmp_path: Path) -> None:
+    seed_dir = tmp_path / "app" / "runtime" / "base"
+    runtime_dir = tmp_path / "data" / "runtime" / "base"
+    runtime_site_packages = runtime_dir / "Lib" / "site-packages"
+    (seed_dir / "Lib" / "site-packages").mkdir(parents=True)
+    runtime_site_packages.mkdir(parents=True)
+    (seed_dir / "python.exe").write_text("seed-python", encoding="utf-8")
+    (runtime_dir / "python.exe").write_text("old-python", encoding="utf-8")
+    (seed_dir / "video_sum_runtime.json").write_text(
+        '{"appVersion":"1.17.0","runtimeLayout":"portable-cpython","pythonVersion":"3.12.0"}',
+        encoding="utf-8",
+    )
+    (runtime_dir / "video_sum_runtime.json").write_text(
+        '{"appVersion":"1.15.0","runtimeLayout":"portable-cpython","pythonVersion":"3.12.0"}',
+        encoding="utf-8",
+    )
+    (runtime_site_packages / "chromadb").mkdir()
+    (runtime_site_packages / "chromadb" / "__init__.py").write_text("user chroma", encoding="utf-8")
+
+    monkeypatch.setattr(runtime_module, "is_frozen", lambda: True)
+    monkeypatch.setattr(runtime_module, "bundled_runtime_seed_dir", lambda: seed_dir)
+    monkeypatch.setattr(runtime_module, "runtime_seed_available", lambda: True)
+    monkeypatch.setattr(runtime_module, "managed_runtime_dir", lambda runtime_channel: runtime_dir)
+    monkeypatch.setattr(
+        runtime_module,
+        "runtime_python_executable",
+        lambda runtime_channel: runtime_dir / "python.exe" if (runtime_dir / "python.exe").exists() else None,
+    )
+
+    original_copytree = runtime_module.shutil.copytree
+
+    def failing_copytree(source, destination, *args, **kwargs):
+        if Path(source) == seed_dir and Path(destination) == runtime_dir:
+            raise OSError("copy failed")
+        return original_copytree(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(runtime_module.shutil, "copytree", failing_copytree)
+
+    with pytest.raises(OSError, match="copy failed"):
+        bootstrap_managed_runtime("base")
+
+    assert (runtime_dir / "python.exe").read_text(encoding="utf-8") == "old-python"
+    assert (runtime_site_packages / "chromadb" / "__init__.py").read_text(encoding="utf-8") == "user chroma"
+    assert not (runtime_dir.parent / ".base-refresh-backup").exists()
 
 
 def test_activate_runtime_pythonpath_replaces_managed_site_packages(monkeypatch, tmp_path: Path) -> None:

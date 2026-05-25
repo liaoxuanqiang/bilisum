@@ -14,6 +14,16 @@ LEGACY_APP_SLUG = "briefvid"
 DOCKER_DATA_ROOT = Path("/data")
 _DLL_DIRECTORY_HANDLES: dict[str, object] = {}
 _LEGACY_APP_DATA_MIGRATION_DONE = False
+_RUNTIME_APP_PACKAGE_PREFIXES: tuple[str, ...] = (
+    "video_sum_",
+)
+_RUNTIME_PACKAGING_PACKAGE_KEYS: frozenset[str] = frozenset(
+    {
+        "pip",
+        "setuptools",
+        "wheel",
+    }
+)
 
 
 def _env_flag(name: str) -> bool:
@@ -211,6 +221,98 @@ def runtime_site_packages_dir(runtime_channel: str) -> Path:
             return versioned_dirs[-1]
     version = f"python{sys.version_info.major}.{sys.version_info.minor}"
     return lib_dir / version / "site-packages"
+
+
+def _runtime_site_packages_dir_for(runtime_dir: Path) -> Path:
+    legacy_dir = runtime_dir / "Lib" / "site-packages"
+    if legacy_dir.exists():
+        return legacy_dir
+    lib_dir = runtime_dir / "lib"
+    if lib_dir.exists():
+        versioned_dirs = sorted(lib_dir.glob("python*/site-packages"))
+        if versioned_dirs:
+            return versioned_dirs[-1]
+    version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    return lib_dir / version / "site-packages"
+
+
+def _runtime_site_package_key(item: Path) -> str:
+    name = item.name
+    for suffix in (".dist-info", ".egg-info"):
+        if name.endswith(suffix):
+            name = name[: -len(suffix)]
+            break
+    if "-" in name:
+        parts = name.split("-")
+        version_index = next((index for index, part in enumerate(parts) if part[:1].isdigit()), len(parts))
+        name = "-".join(parts[:version_index]) or parts[0]
+    return name.replace("-", "_").lower()
+
+
+def _runtime_extension_should_preserve(item: Path) -> bool:
+    key = _runtime_site_package_key(item)
+    if key in _RUNTIME_PACKAGING_PACKAGE_KEYS:
+        return False
+    return not any(key.startswith(prefix) for prefix in _RUNTIME_APP_PACKAGE_PREFIXES)
+
+
+def _restore_runtime_extensions(runtime_dir: Path, backup_dir: Path) -> None:
+    source = backup_dir / "site-packages"
+    if not source.exists():
+        return
+    target = _runtime_site_packages_dir_for(runtime_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    target_package_keys = {_runtime_site_package_key(item) for item in target.iterdir()}
+    for item in source.iterdir():
+        if not _runtime_extension_should_preserve(item):
+            continue
+        item_key = _runtime_site_package_key(item)
+        if item_key in target_package_keys:
+            continue
+        destination = target / item.name
+        if destination.exists():
+            continue
+        shutil.move(str(item), str(destination))
+
+
+def _move_preserved_runtime_extensions(source_runtime_dir: Path, target_runtime_dir: Path) -> list[str]:
+    source = _runtime_site_packages_dir_for(source_runtime_dir)
+    if not source.exists():
+        return []
+    target = _runtime_site_packages_dir_for(target_runtime_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    target_package_keys = {_runtime_site_package_key(item) for item in target.iterdir()}
+    moved_names: list[str] = []
+    for item in source.iterdir():
+        if not _runtime_extension_should_preserve(item):
+            continue
+        if _runtime_site_package_key(item) in target_package_keys:
+            continue
+        destination = target / item.name
+        if destination.exists():
+            continue
+        shutil.move(str(item), str(destination))
+        moved_names.append(item.name)
+    return moved_names
+
+
+def _move_runtime_site_package_items(source_runtime_dir: Path, target_runtime_dir: Path, item_names: list[str]) -> None:
+    source = _runtime_site_packages_dir_for(source_runtime_dir)
+    target = _runtime_site_packages_dir_for(target_runtime_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    for item_name in reversed(item_names):
+        source_item = source / item_name
+        target_item = target / item_name
+        if source_item.exists() and not target_item.exists():
+            shutil.move(str(source_item), str(target_item))
+
+
+def _restore_interrupted_runtime_refresh(runtime_dir: Path, backup_dir: Path) -> None:
+    if not backup_dir.exists():
+        return
+    if runtime_dir.exists():
+        shutil.rmtree(runtime_dir)
+    shutil.move(str(backup_dir), str(runtime_dir))
 
 
 def runtime_stdlib_dir(runtime_channel: str) -> Path:
@@ -478,11 +580,23 @@ def bootstrap_managed_runtime(runtime_channel: str = "base") -> Path | None:
         return None
 
     seed_dir = bundled_runtime_seed_dir()
+    runtime_dir.parent.mkdir(parents=True, exist_ok=True)
+    refresh_backup_dir = runtime_dir.parent / f".{runtime_dir.name}-refresh-backup"
+    legacy_extension_backup_dir = runtime_dir.parent / f".{runtime_dir.name}-extension-backup"
+    _restore_interrupted_runtime_refresh(runtime_dir, refresh_backup_dir)
+    if runtime_dir.exists() and legacy_extension_backup_dir.exists():
+        _restore_runtime_extensions(runtime_dir, legacy_extension_backup_dir)
+        shutil.rmtree(legacy_extension_backup_dir)
+
     seed_metadata = bundled_runtime_seed_metadata()
     runtime_metadata = read_runtime_metadata(runtime_dir)
     runtime_ready = runtime_python_executable(runtime_channel) is not None
     seed_version = str(seed_metadata.get("appVersion") or "")
     runtime_version = str(runtime_metadata.get("appVersion") or "")
+    can_preserve_extensions = (
+        runtime_metadata.get("runtimeLayout") == seed_metadata.get("runtimeLayout")
+        and runtime_metadata.get("pythonVersion") == seed_metadata.get("pythonVersion")
+    )
     requires_refresh = (
         not runtime_ready
         or runtime_version != seed_version
@@ -491,10 +605,28 @@ def bootstrap_managed_runtime(runtime_channel: str = "base") -> Path | None:
     if not requires_refresh:
         return runtime_dir
 
-    runtime_dir.parent.mkdir(parents=True, exist_ok=True)
+    moved_extension_names: list[str] = []
     if runtime_dir.exists():
-        shutil.rmtree(runtime_dir)
-    shutil.copytree(seed_dir, runtime_dir, dirs_exist_ok=True)
+        shutil.move(str(runtime_dir), str(refresh_backup_dir))
+    try:
+        shutil.copytree(seed_dir, runtime_dir, dirs_exist_ok=True)
+        if can_preserve_extensions and refresh_backup_dir.exists():
+            moved_extension_names = _move_preserved_runtime_extensions(refresh_backup_dir, runtime_dir)
+        if legacy_extension_backup_dir.exists():
+            _restore_runtime_extensions(runtime_dir, legacy_extension_backup_dir)
+    except Exception:
+        if refresh_backup_dir.exists():
+            if runtime_dir.exists() and moved_extension_names:
+                _move_runtime_site_package_items(runtime_dir, refresh_backup_dir, moved_extension_names)
+            if runtime_dir.exists():
+                shutil.rmtree(runtime_dir)
+            shutil.move(str(refresh_backup_dir), str(runtime_dir))
+        raise
+    finally:
+        if refresh_backup_dir.exists():
+            shutil.rmtree(refresh_backup_dir)
+        if legacy_extension_backup_dir.exists() and runtime_dir.exists():
+            shutil.rmtree(legacy_extension_backup_dir)
     return runtime_dir
 
 

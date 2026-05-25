@@ -1,5 +1,4 @@
 import httpx
-import importlib
 from contextlib import asynccontextmanager
 import os
 import subprocess
@@ -42,6 +41,7 @@ from video_sum_service.runtime_support import (
     replace_task_worker,
     run_command,
     serialize_settings,
+    install_knowledge_dependencies as install_knowledge_dependencies_with_worker,
 )
 from video_sum_service.runtime_startup import (
     get_runtime_startup_state,
@@ -333,71 +333,11 @@ def install_local_asr(reinstall: bool = False) -> dict[str, object]:
 
 
 def install_knowledge_dependencies(reinstall: bool = False) -> dict[str, object]:
-    current_settings = settings_manager.current
-    runtime_channel = current_settings.runtime_channel
-    use_current_python = _uses_current_service_python(runtime_channel)
-    if use_current_python:
-        runtime_dir = repo_root()
-        python_executable = Path(sys.executable).resolve()
-        runner = lambda command, runtime_channel, timeout=1800: _run_host_command(command, timeout=timeout)
-    else:
-        runtime_dir = ensure_runtime_channel(runtime_channel)
-        python_executable = runtime_python_executable(runtime_channel)
-        runner = _run_command
-    if runtime_dir is None or python_executable is None:
-        raise HTTPException(status_code=500, detail="Managed runtime is unavailable.")
-
-    try:
-        if not use_current_python:
-            _install_workspace_packages(python_executable, runtime_channel=runtime_channel)
-            _ensure_runtime_pip(python_executable, runtime_channel)
-        result = pip_install_with_fallbacks(
-            python_executable,
-            runtime_channel,
-            ["chromadb>=1.0.0", "sentence-transformers>=3.0"],
-            package_label="知识库依赖",
-            reinstall=reinstall,
-            timeout=1800,
-            runner=runner,
-        )
-    except Exception as exc:
-        clear_environment_probe_cache(runtime_channel)
-        if isinstance(exc, HTTPException):
-            raise
-        detail = getattr(exc, "stderr", None) or getattr(exc, "stdout", None) or str(exc)
-        raise HTTPException(status_code=500, detail=str(detail)[-1500:]) from exc
-
-    importlib.invalidate_caches()
-    activate_runtime_pythonpath(runtime_channel)
-    clear_environment_probe_cache(runtime_channel)
-    environment = detect_environment(runtime_channel)
-    replace_task_worker(
-        app.state,
-        build_worker(
-            app.state.task_repository,
-            current_settings,
-            environment_info=environment,
-        ),
-    )
-    mark_runtime_worker_ready(app.state, environment, message="Runtime worker refreshed after knowledge install.")
-    write_runtime_metadata(
-        runtime_channel,
-        {
-            "runtimeChannel": runtime_channel,
-            "python": str(python_executable),
-            "chromadbInstalled": bool(environment.get("chromadbInstalled")),
-            "chromadbVersion": str(environment.get("chromadbVersion") or ""),
-            "sentenceTransformersInstalled": bool(environment.get("sentenceTransformersInstalled")),
-            "sentenceTransformersVersion": str(environment.get("sentenceTransformersVersion") or ""),
-            "knowledgeDependenciesReady": bool(environment.get("knowledgeDependenciesReady")),
-        },
-    )
-    return {
-        "installed": bool(environment.get("knowledgeDependenciesReady")),
-        "runtimeChannel": runtime_channel,
-        "stdoutTail": ((getattr(result, "stdout", "") or "") + "\n" + (getattr(result, "stderr", "") or "")).strip()[-1500:],
-        "environment": environment,
-    }
+    result, worker = install_knowledge_dependencies_with_worker(reinstall=reinstall, repository=app.state.task_repository)
+    replace_task_worker(app.state, worker)
+    if isinstance(result.get("environment"), dict):
+        mark_runtime_worker_ready(app.state, result["environment"], message="Runtime worker refreshed after knowledge install.")
+    return result
 
 
 def get_task_mindmap(task_id: str) -> TaskMindMapResponse:

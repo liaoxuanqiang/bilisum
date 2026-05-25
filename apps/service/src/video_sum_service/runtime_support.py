@@ -117,6 +117,14 @@ def runtime_subprocess_env(runtime_channel: str) -> dict[str, str]:
     env = dict(os.environ)
     for key in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "__PYVENV_LAUNCHER__"):
         env.pop(key, None)
+    temp_dir = settings_manager.current.cache_dir / "runtime-temp" / runtime_channel
+    try:
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        env["TMP"] = str(temp_dir)
+        env["TEMP"] = str(temp_dir)
+        env["TMPDIR"] = str(temp_dir)
+    except OSError:
+        logger.warning("failed to prepare runtime temp dir path=%s", temp_dir)
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
 
@@ -368,7 +376,24 @@ def ensure_runtime_pip(python_executable: Path, runtime_channel: str) -> None:
         if "No module named pip" not in detail:
             raise
 
-    run_command([str(python_executable), "-m", "ensurepip", "--upgrade"], runtime_channel=runtime_channel, timeout=300)
+    try:
+        run_command([str(python_executable), "-m", "ensurepip", "--upgrade"], runtime_channel=runtime_channel, timeout=300)
+    except subprocess.CalledProcessError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=command_error_detail(
+                exc,
+                "当前运行环境缺少 pip，且自动修复 pip 失败。请重启应用后重试，或删除运行环境目录让 BiliSum 重新释放运行时。",
+            ),
+        ) from exc
+
+    try:
+        run_command([str(python_executable), "-m", "pip", "--version"], runtime_channel=runtime_channel, timeout=120)
+    except subprocess.CalledProcessError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=command_error_detail(exc, "pip 修复完成后仍无法启动。"),
+        ) from exc
 
 
 def install_workspace_packages(python_executable: Path, runtime_channel: str) -> None:
@@ -755,14 +780,18 @@ def detect_environment(runtime_channel: str | None = None) -> dict[str, object]:
         except importlib.metadata.PackageNotFoundError:
             pass
         try:
-            payload["chromadbVersion"] = importlib.metadata.version("chromadb")
+            chromadb_version = importlib.metadata.version("chromadb")
+            import chromadb
+            payload["chromadbVersion"] = chromadb_version
             payload["chromadbInstalled"] = True
-        except importlib.metadata.PackageNotFoundError:
+        except (ImportError, importlib.metadata.PackageNotFoundError):
             pass
         try:
-            payload["sentenceTransformersVersion"] = importlib.metadata.version("sentence-transformers")
+            sentence_transformers_version = importlib.metadata.version("sentence-transformers")
+            import sentence_transformers
+            payload["sentenceTransformersVersion"] = sentence_transformers_version
             payload["sentenceTransformersInstalled"] = True
-        except importlib.metadata.PackageNotFoundError:
+        except (ImportError, importlib.metadata.PackageNotFoundError):
             pass
         payload["knowledgeDependenciesReady"] = bool(
             payload.get("chromadbInstalled") and payload.get("sentenceTransformersInstalled")
@@ -1167,6 +1196,30 @@ def install_knowledge_dependencies(
     if runtime_dir is None or python_executable is None:
         raise HTTPException(status_code=500, detail="Managed runtime is unavailable.")
 
+    if not reinstall:
+        clear_environment_probe_cache(runtime_channel)
+        environment = detect_environment(runtime_channel)
+        if environment.get("knowledgeDependenciesReady"):
+            worker = build_worker(repository, current_settings, environment_info=environment)
+            write_runtime_metadata(
+                runtime_channel,
+                {
+                    "runtimeChannel": runtime_channel,
+                    "python": str(python_executable),
+                    "chromadbInstalled": True,
+                    "chromadbVersion": str(environment.get("chromadbVersion") or ""),
+                    "sentenceTransformersInstalled": True,
+                    "sentenceTransformersVersion": str(environment.get("sentenceTransformersVersion") or ""),
+                    "knowledgeDependenciesReady": True,
+                },
+            )
+            return {
+                "installed": True,
+                "runtimeChannel": runtime_channel,
+                "stdoutTail": "知识库依赖已在当前运行环境可用，无需重复安装。",
+                "environment": environment,
+            }, worker
+
     packages = [
         "chromadb>=1.0.0",
         "sentence-transformers>=3.0",
@@ -1174,7 +1227,6 @@ def install_knowledge_dependencies(
 
     try:
         if not use_current_python:
-            install_workspace_packages(python_executable, runtime_channel=runtime_channel)
             ensure_runtime_pip(python_executable, runtime_channel)
         result = pip_install_with_fallbacks(
             python_executable,
