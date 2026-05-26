@@ -284,6 +284,12 @@ jobs:
             exit 1
           fi
 
+          python "$GITHUB_WORKSPACE/packaging/desktop/validate_macos_package.py" \
+            --dmg "$dmg_path" \
+            --zip "$zip_path" \
+            --version "$RELEASE_VERSION" \
+            --arch "${{ matrix.arch }}"
+
           cp "$dmg_path" "$asset_dir/"
           cp "$zip_path" "$asset_dir/"
           cp "$latest_mac_yml" "$asset_dir/latest-mac-${{ matrix.arch }}.yml"
