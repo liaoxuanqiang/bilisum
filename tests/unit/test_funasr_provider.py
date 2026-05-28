@@ -49,6 +49,7 @@ class TestFunasrProvider:
             tasks_dir=tmp_path,
             transcription_provider="funasr",
             local_asr_available=True,
+            funasr_available=True,
             funasr_model="paraformer-zh",
             funasr_device="cpu",
             funasr_vad_model="fsmn-vad",
@@ -71,6 +72,7 @@ class TestFunasrProvider:
             tasks_dir=tmp_path,
             transcription_provider="funasr",
             local_asr_available=True,
+            funasr_available=True,
             funasr_model="paraformer-zh",
             funasr_device="cpu",
             funasr_vad_model="fsmn-vad",
@@ -100,6 +102,7 @@ class TestFunasrProvider:
             tasks_dir=tmp_path,
             transcription_provider="funasr",
             local_asr_available=True,
+            funasr_available=True,
             funasr_model="paraformer-zh",
             funasr_device="cpu",
         )
@@ -227,30 +230,32 @@ class TestFunasrProvider:
             encoding="utf-8",
         )
 
-        with patch.object(runner, "_build_funasr_command") as mock_build:
-            mock_build.return_value = ["echo", "test"]
-            with patch("video_sum_core.pipeline.real.subprocess.Popen") as mock_popen:
-                mock_process = MagicMock()
-                mock_process.poll.return_value = 3221226505
-                mock_process.returncode = 3221226505
-                mock_process.communicate.return_value = ("", "")
-                mock_popen.return_value = mock_process
+        with patch.object(output_path, "unlink"):  # keep file alive through cleanup
+            with patch.object(output_path, "exists", return_value=True):
+                with patch.object(runner, "_build_funasr_command") as mock_build:
+                    mock_build.return_value = ["echo", "test"]
+                    with patch("video_sum_core.pipeline.real.subprocess.Popen") as mock_popen:
+                        mock_process = MagicMock()
+                        mock_process.poll.return_value = 3221226505
+                        mock_process.returncode = 3221226505
+                        mock_process.communicate.return_value = ("", "")
+                        mock_popen.return_value = mock_process
 
-                transcript, segments = runner._run_funasr_subprocess(
-                    audio_path=audio_path,
-                    duration=None,
-                    emit=lambda *args: None,
-                    model_name="paraformer-zh",
-                    device="cpu",
-                    vad_model="",
-                    punc_model="",
-                    spk_model="",
-                    hub="ms",
-                    hotword="",
-                )
+                        transcript, segments = runner._run_funasr_subprocess(
+                            audio_path=audio_path,
+                            duration=None,
+                            emit=lambda *args: None,
+                            model_name="paraformer-zh",
+                            device="cpu",
+                            vad_model="",
+                            punc_model="",
+                            spk_model="",
+                            hub="ms",
+                            hotword="",
+                        )
 
-                assert transcript == "[00:00] 测试"
-                assert len(segments) == 1
+                        assert transcript == "[00:00] 测试"
+                        assert len(segments) == 1
 
     def test_run_funasr_subprocess_crash_without_output(self, tmp_path):
         settings = PipelineSettings(
