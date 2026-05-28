@@ -219,43 +219,51 @@ class TestFunasrProvider:
         audio_path = tmp_path / "test.wav"
         audio_path.write_text("dummy")
         output_path = audio_path.with_name("funasr_worker_result.json")
-        output_path.write_text(
-            json.dumps(
-                {
-                    "transcript": "[00:00] 测试",
-                    "segments": [{"start": 0, "end": 2, "text": "测试"}],
-                },
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
 
-        with patch.object(output_path, "unlink"):  # keep file alive through cleanup
-            with patch.object(output_path, "exists", return_value=True):
-                with patch.object(runner, "_build_funasr_command") as mock_build:
-                    mock_build.return_value = ["echo", "test"]
-                    with patch("video_sum_core.pipeline.real.subprocess.Popen") as mock_popen:
-                        mock_process = MagicMock()
-                        mock_process.poll.return_value = 3221226505
-                        mock_process.returncode = 3221226505
-                        mock_process.communicate.return_value = ("", "")
-                        mock_popen.return_value = mock_process
+        # _run_funasr_subprocess deletes any existing output file on entry,
+        # so we MUST NOT pre-write it.  Instead, the poll side-effect writes
+        # it on the second invocation (simulating a crashed subprocess that
+        # produced output before dying).
+        call_count = [0]
 
-                        transcript, segments = runner._run_funasr_subprocess(
-                            audio_path=audio_path,
-                            duration=None,
-                            emit=lambda *args: None,
-                            model_name="paraformer-zh",
-                            device="cpu",
-                            vad_model="",
-                            punc_model="",
-                            spk_model="",
-                            hub="ms",
-                            hotword="",
-                        )
+        def poll_side_effect() -> int | None:
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return None  # process still running
+            # Subprocess crashed mid-cleanup; write valid output then fail.
+            if not output_path.exists():
+                output_path.write_text(
+                    json.dumps(
+                        {"transcript": "[00:00] 测试", "segments": [{"start": 0, "end": 2, "text": "测试"}]},
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+            return 3221226505  # native crash exit code
+        with patch.object(runner, "_build_funasr_command") as mock_build:
+            mock_build.return_value = ["echo", "test"]
+            with patch("video_sum_core.pipeline.real.subprocess.Popen") as mock_popen:
+                mock_process = MagicMock()
+                mock_process.poll.side_effect = poll_side_effect
+                mock_process.returncode = 3221226505
+                mock_process.communicate.return_value = ("", "")
+                mock_popen.return_value = mock_process
 
-                        assert transcript == "[00:00] 测试"
-                        assert len(segments) == 1
+                transcript, segments = runner._run_funasr_subprocess(
+                    audio_path=audio_path,
+                    duration=None,
+                    emit=lambda *args: None,
+                    model_name="paraformer-zh",
+                    device="cpu",
+                    vad_model="",
+                    punc_model="",
+                    spk_model="",
+                    hub="ms",
+                    hotword="",
+                )
+
+                assert transcript == "[00:00] 测试"
+                assert len(segments) == 1
 
     def test_run_funasr_subprocess_crash_without_output(self, tmp_path):
         settings = PipelineSettings(
