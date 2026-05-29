@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import glob
 import json
 import logging
 import math
@@ -809,11 +810,10 @@ class RealPipelineRunner(PipelineRunner):
                 ydl.download([url])
         except DownloadError as exc:
             self._raise_ydl_error(exc)
-        import glob as _glob
         candidates = sorted(
             task_dir / p
-            for p in _glob.glob(
-                f"{_glob.escape(str(task_dir / safe_title))}.*"
+            for p in glob.glob(
+                f"{glob.escape(str(task_dir / safe_title))}.*"
             )
         )
         if not candidates:
@@ -3489,11 +3489,9 @@ P 数索引：
                 ydl.download([url])
         except DownloadError as exc:
             self._raise_ydl_error(exc)
-        import glob as _glob
-        from pathlib import Path as _Path
         candidates = sorted(
-            (_Path(p) for p in _glob.glob(
-                f"{_glob.escape(str(output_dir / safe_title))}.visual.*"
+            (Path(p) for p in glob.glob(
+                f"{glob.escape(str(output_dir / safe_title))}.visual.*"
             )),
             key=lambda item: item.stat().st_mtime,
             reverse=True,
