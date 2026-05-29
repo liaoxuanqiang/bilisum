@@ -86,6 +86,7 @@ VLM 理解型图文笔记是一版从零设计的笔记生成方式：VLM 阅读
 ### ASR 转写
 
 - SiliconFlow ASR：长音频自动切片 + 并发识别，突破 60 分钟限制
+- **FunASR（QwenASR）**：阿里本地语音识别引擎，中文效果超越 Whisper，CPU 速度约 34 倍，GPU 约 13 倍。支持 VAD / 自动标点 / 说话人识别
 - 多模态 ASR：支持 OpenAI 兼容的音频模型（如 mimo-v2-omni），切片时长和重试次数可调
 - 本地 Whisper：CPU / CUDA 可选
 
@@ -111,7 +112,7 @@ VLM 理解型图文笔记是一版从零设计的笔记生成方式：VLM 阅读
 | 桌面端 | Electron + React + TypeScript + Vite |
 | 后端服务 | FastAPI + SQLite |
 | 视频下载 | yt-dlp |
-| 语音转写 | SiliconFlow ASR / 多模态 ASR / 本地 Whisper |
+| 语音转写 | SiliconFlow ASR / 多模态 ASR / 本地 Whisper / FunASR（QwenASR） |
 | 摘要生成 | OpenAI-compatible / Anthropic Claude / 本地规则降级 |
 | 视觉模型 | OpenAI / Anthropic / 兼容接口（自动格式适配） |
 | 知识库 RAG | Embedding 向量检索 + LLM Agent |
@@ -319,6 +320,7 @@ uv run --package video-sum-service python -c "import video_sum_core, video_sum_s
 - [x] VLM 理解型图文笔记
 - [x] 视觉模型多提供商独立配置
 - [x] 多模态 ASR
+- [x] FunASR（QwenASR）本地语音识别
 - [ ] 更多平台支持
 - [ ] Notion 等第三方工具集成
 
