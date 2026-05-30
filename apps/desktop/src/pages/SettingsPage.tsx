@@ -2084,7 +2084,7 @@ export function SettingsPage({
                   </div>
                   <div className="settings-story-stat">
                     <span>转写</span>
-                    <strong>{form.transcription_provider === "siliconflow" ? "SiliconFlow API" : "本地 ASR"}</strong>
+                    <strong>{form.transcription_provider === "siliconflow" ? "SiliconFlow API" : form.transcription_provider === "funasr" ? "FunASR" : form.transcription_provider === "multimodal" ? "多模态 ASR" : "Whisper 转写"}</strong>
                   </div>
                   <div className="settings-story-stat">
                     <span>摘要模式</span>
@@ -2161,9 +2161,13 @@ export function SettingsPage({
                           ? asrReady
                             ? "多模态 ASR 已配置"
                             : "多模态 ASR 待补全"
+                          : form.transcription_provider === "funasr"
+                          ? funasrInstalled
+                            ? "FunASR 已安装"
+                            : "FunASR 未安装"
                           : localAsrInstalled
-                            ? "本地 ASR 已安装"
-                            : "本地 ASR 未安装"}
+                            ? "Whisper 已安装"
+                            : "Whisper 未安装"}
                     </strong>
                   </div>
                 </div>
@@ -2209,7 +2213,7 @@ export function SettingsPage({
                     <span className="overview-info-value">{environment?.ytDlpVersion || "-"}</span>
                   </div>
                   <div className="overview-info-item">
-                    <span className="overview-info-label">本地 ASR</span>
+                    <span className="overview-info-label">{form.transcription_provider === "funasr" ? "FunASR" : "Whisper"}</span>
                     <span className={`overview-info-value ${environment?.localAsrInstalled ? "text-success" : ""}`}>
                       {environment?.localAsrInstalled ? environment?.localAsrVersion || "已安装" : "未安装"}
                     </span>
@@ -2547,7 +2551,7 @@ export function SettingsPage({
                     <option value="siliconflow">硅基流动 API</option>
                     <option value="multimodal">多模态 ASR（第三方）</option>
                     <option value="funasr" disabled={!funasrInstalled}>FunASR（本地）{funasrInstalled ? "" : "（需先安装）"}</option>
-                    <option value="local" disabled={!localAsrInstalled}>本地 ASR（需先安装）</option>
+                    <option value="local" disabled={!localAsrInstalled}>Whisper 转写（需先安装）</option>
                   </select>
                   <span className="settings-input-caption">默认推荐云端模式（硅基流动的语音识别是免费的！只需要注册然后填上apikey就可以用了）。</span>
                 </label>

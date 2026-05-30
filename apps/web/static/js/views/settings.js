@@ -317,7 +317,7 @@ export function renderSettingsView(state) {
         </div>
         <div class="setting-list">
           ${renderRow("LLM 启用", settings.llm_enabled ? "✓ 是" : "✗ 否", settings.llm_enabled ? "success" : "neutral")}
-          ${renderRow("转写方式", transcriptionProvider === "siliconflow" ? "硅基流动 API" : transcriptionProvider === "multimodal" ? "多模态 ASR" : "本地 ASR", transcriptionProvider === "siliconflow" || transcriptionProvider === "multimodal" ? "success" : "neutral")}
+          ${renderRow("转写方式", transcriptionProvider === "siliconflow" ? "硅基流动 API" : transcriptionProvider === "multimodal" ? "多模态 ASR" : transcriptionProvider === "funasr" ? "FunASR" : "Whisper 转写", transcriptionProvider === "siliconflow" || transcriptionProvider === "multimodal" ? "success" : "neutral")}
           ${transcriptionProvider === "multimodal" ? `
           ${renderRow("多模态模型", settings.multimodal_asr_model || "-", settings.multimodal_asr_model ? "success" : "neutral")}
           ${renderRow("多模态 API Key", settings.multimodal_asr_api_key_configured ? "✓ 已配置" : "✗ 未配置", settings.multimodal_asr_api_key_configured ? "success" : "warning")}
