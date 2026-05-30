@@ -2,7 +2,7 @@ import os
 import re
 import threading
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import JSONResponse
 from video_sum_core.models.tasks import TaskStatus
 from video_sum_infra.prompt_library import (
@@ -42,6 +42,7 @@ from video_sum_service.integrations import (
 )
 from video_sum_service.runtime_startup import get_runtime_startup_state, mark_runtime_worker_ready
 from video_sum_service.runtime_support import (
+    _load_cached_environment_probe,
     build_worker,
     clear_environment_probe_cache,
     detect_environment,
@@ -80,6 +81,41 @@ def _clear_knowledge_service_cache(app_state) -> None:
     ):
         if hasattr(app_state, key):
             delattr(app_state, key)
+
+
+def _rebuild_worker_after_save(
+    app_state,
+    current_settings: "ServiceSettings",
+    active_runtime_channel: str,
+) -> None:
+    """Rebuild task worker in background after settings save."""
+    environment = detect_environment(active_runtime_channel)
+    replace_task_worker(
+        app_state,
+        build_worker(
+            app_state.task_repository,
+            current_settings,
+            environment_info=environment,
+        ),
+    )
+    mark_runtime_worker_ready(
+        app_state,
+        environment,
+        "Runtime worker refreshed after settings update.",
+    )
+
+
+def _load_cached_environment_snapshot(runtime_channel: str) -> dict[str, object]:
+    """Return a cached environment probe without triggering a fresh subprocess run.
+
+    When the cache is cold, returns a minimal stub so serialize_settings
+    doesn't fall back to detect_environment() and block the response.
+    The background task will rebuild the worker with real env data shortly.
+    """
+    cached = _load_cached_environment_probe(runtime_channel)
+    if cached is not None:
+        return dict(cached)
+    return {"cudaAvailable": False}
 
 
 def _prompt_preset_response(preset: PromptPreset) -> PromptPresetResponse:
@@ -328,7 +364,7 @@ def get_app_update() -> dict[str, object]:
 
 
 @router.put("/settings")
-def update_settings(payload: SettingsUpdatePayload, request: Request) -> dict[str, object]:
+def update_settings(payload: SettingsUpdatePayload, request: Request, background_tasks: BackgroundTasks) -> dict[str, object]:
     previous_settings = settings_manager.current
     requested_runtime_channel = normalize_runtime_channel(
         payload.runtime_channel or previous_settings.runtime_channel,
@@ -351,23 +387,19 @@ def update_settings(payload: SettingsUpdatePayload, request: Request) -> dict[st
         clear_environment_probe_cache(previous_settings.runtime_channel)
         clear_environment_probe_cache(current_settings.runtime_channel)
         _clear_knowledge_service_cache(request.app.state)
-    environment = detect_environment(active_runtime_channel)
-    replace_task_worker(
+    # Defer worker rebuild + env probe to background so the save response
+    # returns immediately instead of blocking on subprocess / thread init.
+    background_tasks.add_task(
+        _rebuild_worker_after_save,
         request.app.state,
-        build_worker(
-            request.app.state.task_repository,
-            current_settings,
-            environment_info=environment,
-        ),
+        current_settings,
+        active_runtime_channel,
     )
-    mark_runtime_worker_ready(
-        request.app.state,
-        environment,
-        "Runtime worker refreshed after settings update.",
-    )
+    # Serialize with a fast environment snapshot (use cached probe if available).
+    environment_snapshot = _load_cached_environment_snapshot(active_runtime_channel)
     return {
         "saved": True,
-        "settings": serialize_settings(current_settings, environment_info=environment),
+        "settings": serialize_settings(current_settings, environment_info=environment_snapshot),
         "message": "设置已保存。涉及服务监听地址的修改将在下次启动后生效。",
     }
 

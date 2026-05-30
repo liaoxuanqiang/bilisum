@@ -259,10 +259,6 @@ export function SettingsPage({
   const [cudaStatus, setCudaStatus] = useState("");
   const [cudaOutput, setCudaOutput] = useState("");
   const [cudaInstalling, setCudaInstalling] = useState(false);
-  const [cudaProgress, setCudaProgress] = useState(0);
-  const [cudaStage, setCudaStage] = useState("");
-  const [cudaStartedAt, setCudaStartedAt] = useState<number | null>(null);
-  const [cudaDetail, setCudaDetail] = useState("");
   const [localAsrStatus, setLocalAsrStatus] = useState("");
   const [localAsrOutput, setLocalAsrOutput] = useState("");
   const [localAsrInstalling, setLocalAsrInstalling] = useState(false);
@@ -978,15 +974,6 @@ export function SettingsPage({
   const updateStatusTone = getUpdateStatusTone(updateInfo);
   const updateSummary = getUpdateSummary(updateInfo, currentVersion);
   const updateActionBusy = updateInfo.status === "checking" || updateInfo.status === "downloading" || updateInfo.status === "installing";
-  const hasCudaError = cudaStatus.includes("失败");
-  const cudaPhasePlan = [
-    { threshold: 10, label: "准备环境" },
-    { threshold: 26, label: "安装基础工具" },
-    { threshold: 48, label: "同步应用依赖" },
-    { threshold: 78, label: "安装 CUDA 依赖" },
-    { threshold: 92, label: "刷新环境信息" },
-    { threshold: 100, label: "完成设置" },
-  ];
 
   useEffect(() => {
     if (!form || activeCategory !== "files") {
@@ -998,26 +985,6 @@ export function SettingsPage({
     }, 100);
     return () => window.clearTimeout(timer);
   }, [activeCategory, refreshStorageOverview]);
-
-  useEffect(() => {
-    if (!cudaInstalling) {
-      return;
-    }
-
-    const timer = window.setInterval(() => {
-      const elapsedMs = cudaStartedAt ? Date.now() - cudaStartedAt : 0;
-      const elapsedSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
-      const expectedProgress = Math.min(94, 8 + Math.floor(elapsedSeconds * 1.6));
-      setCudaProgress((current) => {
-        const next = Math.max(current, expectedProgress);
-        const activePhase = cudaPhasePlan.find((phase) => next <= phase.threshold) || cudaPhasePlan[cudaPhasePlan.length - 1];
-        setCudaStage(`${activePhase.label} · 已等待 ${elapsedSeconds} 秒`);
-        return next;
-      });
-    }, 1200);
-
-    return () => window.clearInterval(timer);
-  }, [cudaInstalling, cudaStartedAt]);
 
   useEffect(() => {
     if (!focusIssueRequest || !form) {
@@ -1762,32 +1729,7 @@ export function SettingsPage({
     }
   }
 
-  const cudaPhaseItems = cudaPhasePlan.map((phase, index) => {
-    const previousThreshold = index === 0 ? 0 : cudaPhasePlan[index - 1].threshold;
-    const isComplete = cudaProgress >= phase.threshold;
-    const isActive = !isComplete && cudaProgress > previousThreshold;
-    const isFailed = hasCudaError && isActive;
-    return {
-      ...phase,
-      state: isComplete ? "done" : isFailed ? "failed" : isActive ? "active" : "pending",
-    };
-  });
-  const currentCudaPhase =
-    cudaPhaseItems.find((phase) => phase.state === "failed")
-    || cudaPhaseItems.find((phase) => phase.state === "active")
-    || (cudaProgress >= 100 ? cudaPhaseItems[cudaPhaseItems.length - 1] : cudaPhaseItems.find((phase) => phase.state === "done"))
-    || null;
-  const cudaProgressValue = Math.round(Math.min(cudaProgress, 100));
-  const cudaStageDetail = cudaStage.includes("·") ? cudaStage.split("·")[1]?.trim() || "" : "";
   const configHealth = getConfigHealth(form, environment);
-  const cudaProgressTitle = cudaStatus.includes("失败")
-    ? "安装失败"
-    : cudaProgress >= 100
-      ? "安装完成"
-      : cudaInstalling
-        ? "正在安装 CUDA 支持"
-        : "安装进度";
-  const cudaProgressSummary = currentCudaPhase?.label || "等待开始";
 
   function registerFocusTarget(targetKey: string) {
     return (node: HTMLElement | null) => {
@@ -2128,7 +2070,7 @@ export function SettingsPage({
                   </div>
                   <div className="overview-status-info">
                     <span className="overview-status-label">推理设备</span>
-                    <strong className="overview-status-value">{form.transcription_provider === "local" ? devicePreferenceLabel(form.whisper_device) : "云端识别"}</strong>
+                    <strong className="overview-status-value">{form.transcription_provider === "local" ? devicePreferenceLabel(form.whisper_device) : form.transcription_provider === "funasr" ? devicePreferenceLabel(form.funasr_device) : "云端识别"}</strong>
                   </div>
                 </div>
                 <div className="overview-status-card">
@@ -2755,7 +2697,7 @@ export function SettingsPage({
             <section className="settings-category-section generation-settings-section">
               <header className="settings-category-header">
                 <h2>摘要生成</h2>
-                <p>按“基础生成、模型接入、自动产物、图文截图、长视频切块”分层管理，日常开关留在页面，密钥和模型细节放进悬浮窗。</p>
+                <p>按"基础生成、模型接入、自动产物、图文截图、长视频切块"分层管理，日常开关留在页面，密钥和模型细节放进悬浮窗。</p>
               </header>
               <div className="generation-settings-tree">
                 <section className="settings-tree-panel">
@@ -3037,7 +2979,7 @@ export function SettingsPage({
                     </label>
                     <div className="settings-inline-alert info">
                       <strong>分块并发在性能页调整</strong>
-                      <span>如果需要控制单个任务内部同时请求的摘要块数量，请前往“性能与资源”。</span>
+                      <span>如果需要控制单个任务内部同时请求的摘要块数量，请前往"性能与资源"。</span>
                     </div>
                   </div>
                 </section>
@@ -3131,7 +3073,7 @@ export function SettingsPage({
                     <option value="same_as_main">跟随主 LLM</option>
                     <option value="custom">使用独立配置</option>
                   </select>
-                  <span className="settings-input-caption">“跟随主 LLM”会直接复用摘要 LLM 的 Base URL、API Key 与模型名。</span>
+                  <span className="settings-input-caption">"跟随主 LLM"会直接复用摘要 LLM 的 Base URL、API Key 与模型名。</span>
                 </label>
                 {knowledgeLlmUsesCustom ? (
                   <>
@@ -3240,7 +3182,7 @@ export function SettingsPage({
               </header>
               <div className="settings-prompt-scope-alert">
                 <span className="settings-prompt-scope-kicker">生效范围</span>
-                <p>首页选择的 Prompt 预设只影响摘要生成；知识笔记和图文笔记使用下方全局模板。恢复默认或修改模板后，需要点击左侧“保存设置”才会生效。</p>
+                <p>首页选择的 Prompt 预设只影响摘要生成；知识笔记和图文笔记使用下方全局模板。恢复默认或修改模板后，需要点击左侧"保存设置"才会生效。</p>
               </div>
               {hasOuterSectionsOpen && (
                 <div className="settings-prompt-global-sticky">
@@ -3643,7 +3585,7 @@ export function SettingsPage({
                 </div>
                 <div className="metric-card">
                   <span className="metric-label">生效设备</span>
-                  <strong className={`metric-value ${normalizeDevicePreference(form.whisper_device) === "cuda" ? "text-success" : ""}`}>{devicePreferenceLabel(form.whisper_device)}</strong>
+                  <strong className={`metric-value ${(form.transcription_provider === "funasr" ? normalizeDevicePreference(form.funasr_device) : normalizeDevicePreference(form.whisper_device)) === "cuda" ? "text-success" : ""}`}>{form.transcription_provider === "funasr" ? devicePreferenceLabel(form.funasr_device) : devicePreferenceLabel(form.whisper_device)}</strong>
                 </div>
                 <div className="metric-card">
                   <span className="metric-label">推荐模型</span>
@@ -3721,34 +3663,24 @@ export function SettingsPage({
                     onClick={async () => {
                       try {
                         setCudaInstalling(true);
-                        setCudaStartedAt(Date.now());
-                        setCudaProgress(8);
-                        setCudaStage("准备 GPU 运行环境目录");
-                        setCudaStatus("CUDA 安装已开始，正在准备运行环境...");
+                        setCudaStatus("正在安装 CUDA 支持...");
                         setCudaOutput("");
-                        setCudaDetail(`将为 ${targetRuntimeChannel} 安装 PyTorch CUDA 依赖，并把运行环境切换到该通道。`);
                         const result = await api.installCuda({ cuda_variant: form.cuda_variant });
                         const nextRuntimeChannel = result.runtimeChannel || form.runtime_channel;
                         setCudaInstalling(false);
-                        setCudaProgress(100);
-                        setCudaStage(result.restartRequired ? "CUDA 安装完成，等待重启切换运行环境" : "CUDA 安装完成");
                         setCudaStatus(
                           result.restartRequired
                             ? "CUDA 安装完成，请重启应用后切换到新的 GPU 运行环境"
-                            : "CUDA 安装命令已执行"
+                            : "CUDA 安装完成"
                         );
                         setCudaOutput(result.stdoutTail || "");
-                        setCudaDetail(`安装目标：${result.cudaVariant || form.cuda_variant}，运行环境通道：${nextRuntimeChannel}。`);
                         setForm({ ...form, runtime_channel: nextRuntimeChannel, cuda_variant: result.cudaVariant || form.cuda_variant });
                         setIsDirty(false);
                         setEnvironment(await api.getEnvironment({ runtimeChannel: nextRuntimeChannel, refresh: true }));
                         onRefresh();
                       } catch (error) {
                         setCudaInstalling(false);
-                        setCudaStage("CUDA 安装失败");
-                        setCudaProgress((current) => (current > 0 ? current : 12));
                         setCudaStatus(error instanceof Error ? error.message : "CUDA 安装失败");
-                        setCudaDetail("安装依赖失败。请查看下方输出和服务日志。");
                       }
                     }}
                   >
@@ -3756,6 +3688,14 @@ export function SettingsPage({
                   </button>
                 </div>
               </div>
+              {(cudaInstalling || cudaStatus || cudaOutput) ? (
+                <div className="settings-form-group">
+                  <div className="settings-input-group">
+                    <span className="settings-input-label">CUDA 安装输出</span>
+                    <textarea className="textarea-field log-viewer" rows={12} readOnly value={cudaOutput || (cudaInstalling ? "安装中..." : cudaStatus)} />
+                  </div>
+                </div>
+              ) : null}
               <div className="settings-cuda-section">
                 <h3 className="settings-cuda-title">运行环境更新检查</h3>
                 <div className="settings-runtime-toolbar">
@@ -3844,63 +3784,12 @@ export function SettingsPage({
                   ) : null}
                 </div>
               </div>
-              {(cudaInstalling || cudaProgress > 0 || cudaStatus) ? (
-                <div className="cuda-progress-card">
-                  <div className="cuda-progress-header">
-                    <div className="cuda-progress-copy">
-                      <strong>{cudaProgressTitle}</strong>
-                      <span>
-                        {cudaProgressSummary}
-                        {cudaStageDetail ? ` · ${cudaStageDetail}` : ""}
-                      </span>
-                    </div>
-                    <span className="cuda-progress-percent">{cudaProgressValue}%</span>
-                  </div>
-                  <div className="progress-bar-simple cuda-progress-bar">
-                    <div
-                      className={`progress-fill-simple ${hasCudaError ? "error" : cudaProgress >= 100 ? "success" : ""}`}
-                      style={{ width: `${Math.min(cudaProgress, 100)}%` }}
-                    />
-                  </div>
-                  <div className="cuda-stepper" role="list" aria-label="CUDA 安装步骤">
-                    {cudaPhaseItems.map((phase, index) => (
-                      <div key={phase.label} className={`cuda-step ${phase.state}`} role="listitem">
-                        <span className="cuda-step-index">{index + 1}</span>
-                        <span className="cuda-step-label">{phase.label}</span>
-                        <span className="cuda-step-state">
-                          {phase.state === "done" ? "已完成" : phase.state === "failed" ? "失败" : phase.state === "active" ? "进行中" : "未开始"}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                  <p className="cuda-helper-text">
-                    安装通常需要几分钟。完成后点击“重新检测”确认 GPU 运行环境是否已就绪。
-                  </p>
-                  {cudaDetail ? (
-                    <div className={`cuda-status-note ${hasCudaError ? "is-error" : ""}`}>
-                      {cudaDetail}
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-              {cudaOutput ? (
-                <label className="input-row">
-                  <span className="input-label">CUDA 安装输出</span>
-                  <textarea className="textarea-field log-viewer" rows={12} readOnly value={cudaOutput}></textarea>
-                </label>
-              ) : null}
               {environment?.runtimeError ? (
-                <label className="input-row">
-                  <span className="input-label">运行环境错误详情</span>
-                  <textarea className="textarea-field log-viewer" rows={8} readOnly value={environment.runtimeError}></textarea>
-                </label>
-              ) : null}
-              {(cudaStatus.includes("完成") || cudaProgress >= 100) ? (
-                <div className="cuda-next-steps">
-                  <strong>下一步</strong>
-                  <span>1. 点击"重新检测"确认 GPU runtime 已就绪。</span>
-                  <span>2. 确认"运行环境通道"已切换到目标 GPU 通道。</span>
-                  <span>3. 若提示需要重启，请重启应用后再开始转写任务。</span>
+                <div className="settings-form-group">
+                  <div className="settings-input-group">
+                    <span className="settings-input-label">运行环境错误详情</span>
+                    <textarea className="textarea-field log-viewer" rows={8} readOnly value={environment.runtimeError} />
+                  </div>
                 </div>
               ) : null}
             </section>
@@ -4229,7 +4118,7 @@ export function SettingsPage({
               <section className="knowledge-prompt-guide-section">
                 <h3>两个输入框分别控制什么</h3>
                 <p>
-                  System Prompt 负责定义角色、底线和总体风格，例如“严谨的中文知识编辑”“不得编造”“只输出 JSON”。
+                  System Prompt 负责定义角色、底线和总体风格，例如"严谨的中文知识编辑""不得编造""只输出 JSON"。
                   User Template 负责规定笔记结构、可用素材和输出格式，是调整笔记样式的主要位置。
                 </p>
               </section>
@@ -4258,7 +4147,7 @@ export function SettingsPage({
               </section>
               <section className="knowledge-prompt-guide-section">
                 <h3>怎么修改笔记样式</h3>
-                <p>想改格式时，优先改 User Template 里的“写作要求”或“目标结构”。例如：</p>
+                <p>想改格式时，优先改 User Template 里的"写作要求"或"目标结构"。例如：</p>
                 <pre>{`请把 knowledgeNoteMarkdown 写成以下结构：
 # {title}
 
@@ -4274,7 +4163,7 @@ export function SettingsPage({
 ## 原文中的限制
 - ...`}</pre>
                 <p>
-                  如果想要更短，就写“每个小节不超过 5 条要点”。如果想要课程笔记风格，就写“优先使用定义、例子、推导、复盘题”。
+                  如果想要更短，就写"每个小节不超过 5 条要点"。如果想要课程笔记风格，就写"优先使用定义、例子、推导、复盘题"。
                 </p>
               </section>
               <section className="knowledge-prompt-guide-section warning">
