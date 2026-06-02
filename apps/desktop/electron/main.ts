@@ -16,6 +16,7 @@ import {
   Menu,
   MenuItemConstructorOptions,
   nativeImage,
+  nativeTheme,
   OpenDialogOptions,
   shell,
   Tray,
@@ -431,6 +432,7 @@ async function openBilibiliLoginAndCaptureCookies(): Promise<BilibiliCookieExpor
       parent: mainWindow ?? undefined,
       modal: false,
       show: true,
+      backgroundColor: nativeTheme.shouldUseDarkColors ? "#121212" : "#fafbfc",
       webPreferences: {
         partition: "persist:briefvid-bilibili-login",
         nodeIntegration: false,
@@ -1027,6 +1029,7 @@ function getSplashMarkup(message = "正在启动 BiliSum 服务...") {
             min-height: 100vh;
             overflow: hidden;
             background: linear-gradient(180deg, var(--bg-base) 0%, var(--bg-soft) 100%);
+            background-color: #121212;
             color: var(--text-primary);
             font-family: "Inter", "Plus Jakarta Sans", "Manrope", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", "Segoe UI", sans-serif;
             user-select: none;
@@ -2081,6 +2084,7 @@ function createWindow() {
     frame: false,
     titleBarStyle: "hidden",
     trafficLightPosition: { x: 12, y: 12 },
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#121212" : "#fafbfc",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,

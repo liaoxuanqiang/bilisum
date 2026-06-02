@@ -10,6 +10,24 @@
     <link rel="icon" href="/static/favicon-32x32.png" type="image/png" sizes="32x32" />
     <link rel="alternate icon" href="/static/favicon.ico" sizes="any" />
     <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
+    <script>
+      // Set data-theme BEFORE CSS paints to eliminate white flash in dark mode.
+      // Must run synchronously — no DOM APIs that yield.
+      (function () {
+        try {
+          var saved = localStorage.getItem("theme");
+          var isDark = saved === "dark" || (!saved && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.setAttribute("data-theme", isDark ? "dark" : "light");
+        } catch (_) {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+      })();
+    </script>
+    <style>
+      :root { --bg-base: #121212; --bg-card: #202020; }
+      :root[data-theme="light"] { --bg-base: #fafbfc; --bg-card: #ffffff; }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg-base); }
+    </style>
   </head>
   <body>
     <div id="root"></div>
