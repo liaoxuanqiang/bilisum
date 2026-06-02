@@ -613,12 +613,20 @@ def bootstrap_managed_runtime(runtime_channel: str = "base") -> Path | None:
     if not requires_refresh:
         return runtime_dir
 
+    # Always try to preserve extensions across refreshes, even when Python
+    # version or layout differs.  Silently deleting user-installed packages
+    # (chromadb, sentence-transformers, etc.) is worse than preserving
+    # potentially incompatible ones — pip can repair them afterwards.
+    should_preserve_extensions = (
+        runtime_ready and runtime_dir.exists() and (runtime_metadata or seed_metadata)
+    )
+
     moved_extension_names: list[str] = []
     if runtime_dir.exists():
         _robust_shutil_move(str(runtime_dir), str(refresh_backup_dir))
     try:
         _robust_shutil_copytree(seed_dir, runtime_dir, dirs_exist_ok=True)
-        if can_preserve_extensions and refresh_backup_dir.exists():
+        if should_preserve_extensions and refresh_backup_dir.exists():
             moved_extension_names = _move_preserved_runtime_extensions(refresh_backup_dir, runtime_dir)
         if legacy_extension_backup_dir.exists():
             _restore_runtime_extensions(runtime_dir, legacy_extension_backup_dir)
