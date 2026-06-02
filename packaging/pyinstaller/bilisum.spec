@@ -104,6 +104,8 @@ if BIN_DIR.exists():
 # 简化元数据复制，移除非必要的包元数据
 datas += copy_metadata("pydantic")
 datas += copy_metadata("pydantic-settings")
+# probe_script.py is read at runtime by detect_environment() — not imported
+datas += [(str(ROOT / "apps" / "service" / "src" / "video_sum_service" / "probe_script.py"), "video_sum_service")]
 
 hiddenimports = []
 hiddenimports += collect_submodules("video_sum_service")
