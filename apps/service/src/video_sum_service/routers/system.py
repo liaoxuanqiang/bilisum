@@ -514,7 +514,8 @@ def shutdown_service(request: Request) -> dict[str, object]:
 @router.post("/cuda/install")
 def post_cuda_install(payload: dict[str, object], request: Request) -> dict[str, object]:
     requested_variant = payload.get("cuda_variant", payload.get("cudaVariant", "cu128"))
-    result, worker = install_cuda_support(str(requested_variant), request.app.state.task_repository)
+    session_id = str(payload.get("installSessionId") or "") or None
+    result, worker = install_cuda_support(str(requested_variant), request.app.state.task_repository, session_id=session_id)
     _clear_knowledge_service_cache(request.app.state)
     replace_task_worker(request.app.state, worker)
     if isinstance(result.get("environment"), dict):

@@ -320,6 +320,7 @@ def start_install_session(session_id: str, label: str) -> None:
         "started_at": __import__("time").time(),
         "done": False,
         "success": False,
+        "progress": 0,
     }
     log = _install_log_path(session_id)
     log.write_text(f"[{label}] 开始安装...\n", encoding="utf-8")
@@ -338,8 +339,15 @@ def finish_install_session(session_id: str, success: bool) -> None:
 
 def append_install_log(session_id: str, line: str) -> None:
     log = _install_log_path(session_id)
+    sanitized = line.rstrip("\n\r") + "\n"
     with log.open("a", encoding="utf-8") as f:
-        f.write(line.rstrip("\n\r") + "\n")
+        f.write(sanitized)
+    # Parse pip progress bar, e.g. " 45%|████     | 1.2G/2.7G [02:30<04:10, 11.0MB/s]"
+    m = re.search(r"(\d{1,3})%\|", sanitized)
+    if m:
+        meta = _install_sessions.get(session_id)
+        if meta is not None:
+            meta["progress"] = int(m.group(1))
 
 
 def read_install_log(session_id: str, tail_bytes: int = 8192) -> dict[str, object]:
@@ -354,6 +362,7 @@ def read_install_log(session_id: str, tail_bytes: int = 8192) -> dict[str, objec
         "label": meta.get("label", ""),
         "done": meta.get("done", False),
         "success": meta.get("success", False),
+        "progress": meta.get("progress", 0),
         "log": content,
     }
 
@@ -1635,7 +1644,7 @@ def serialize_settings(
     }
 
 
-def install_cuda_support(cuda_variant: str, repository: SqliteTaskRepository) -> tuple[dict[str, object], TaskWorker]:
+def install_cuda_support(cuda_variant: str, repository: SqliteTaskRepository, *, session_id: str | None = None) -> tuple[dict[str, object], TaskWorker]:
     if cuda_variant not in {"cu124", "cu126", "cu128"}:
         raise HTTPException(status_code=400, detail="Unsupported CUDA variant.")
 
@@ -1645,6 +1654,11 @@ def install_cuda_support(cuda_variant: str, repository: SqliteTaskRepository) ->
     if runtime_dir is None or python_executable is None:
         raise HTTPException(status_code=500, detail="Managed runtime is unavailable.")
 
+    use_streaming = session_id is not None
+    if use_streaming:
+        start_install_session(session_id, "CUDA")
+    runner = _StreamingRunner(session_id) if use_streaming else run_command
+
     try:
         install_workspace_packages(python_executable, runtime_channel=runtime_channel)
         ensure_runtime_pip(python_executable, runtime_channel)
@@ -1653,14 +1667,23 @@ def install_cuda_support(cuda_variant: str, repository: SqliteTaskRepository) ->
             runtime_channel,
             cuda_variant,
             timeout=1800,
-            runner=run_command,
+            runner=runner,
         )
     except subprocess.CalledProcessError as exc:
+        if isinstance(runner, _StreamingRunner):
+            runner.cancel()
+            finish_install_session(session_id, success=False)
         clear_environment_probe_cache(runtime_channel)
         raise HTTPException(status_code=500, detail=command_error_detail(exc, "安装 CUDA 依赖失败。")) from exc
     except HTTPException:
+        if isinstance(runner, _StreamingRunner):
+            runner.cancel()
+            finish_install_session(session_id, success=False)
         clear_environment_probe_cache(runtime_channel)
         raise
+
+    if use_streaming:
+        finish_install_session(session_id, success=True)
 
     current_settings = settings_manager.save(SettingsUpdatePayload(cuda_variant=cuda_variant, runtime_channel=runtime_channel))
     clear_environment_probe_cache(runtime_channel)
@@ -1675,6 +1698,7 @@ def install_cuda_support(cuda_variant: str, repository: SqliteTaskRepository) ->
         "restartRequired": True,
         "stdoutTail": (result.stdout or "")[-1500:],
         "environment": environment,
+        "installSessionId": session_id,
     }, worker
 
 

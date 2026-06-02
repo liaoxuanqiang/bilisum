@@ -445,7 +445,7 @@ export const api = {
   deleteTask(taskId: string) {
     return fetchJson<{ deleted: boolean }>(`/api/v1/tasks/${taskId}`, { method: "DELETE" });
   },
-  installCuda(payload: { cuda_variant: string }) {
+  installCuda(payload: { cuda_variant: string; installSessionId?: string }) {
     return fetchJson<{
       installed: boolean;
       cudaVariant: string;
@@ -491,6 +491,7 @@ export const api = {
       label: string;
       done: boolean;
       success: boolean;
+      progress: number;
       log: string;
     }>(`/api/v1/asr/install-log?session_id=${encodeURIComponent(sessionId)}`);
   },

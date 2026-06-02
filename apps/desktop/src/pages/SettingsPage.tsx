@@ -259,6 +259,7 @@ export function SettingsPage({
   const [cudaStatus, setCudaStatus] = useState("");
   const [cudaOutput, setCudaOutput] = useState("");
   const [cudaInstalling, setCudaInstalling] = useState(false);
+  const [cudaProgress, setCudaProgress] = useState(0);
   const [localAsrStatus, setLocalAsrStatus] = useState("");
   const [localAsrOutput, setLocalAsrOutput] = useState("");
   const [localAsrInstalling, setLocalAsrInstalling] = useState(false);
@@ -3667,11 +3668,27 @@ export function SettingsPage({
                     type="button"
                     disabled={cudaInstalling}
                     onClick={async () => {
+                      const sessionId = `cuda-${Date.now()}`;
+                      let pollTimer: ReturnType<typeof setInterval> | null = null;
                       try {
                         setCudaInstalling(true);
                         setCudaStatus("正在安装 CUDA 支持...");
                         setCudaOutput("");
-                        const result = await api.installCuda({ cuda_variant: form.cuda_variant });
+                        setCudaProgress(0);
+                        // Start polling install log
+                        pollTimer = setInterval(async () => {
+                          try {
+                            const log = await api.getInstallLog(sessionId);
+                            if (log.log) setCudaOutput(log.log);
+                            if (typeof log.progress === "number") setCudaProgress(log.progress);
+                            if (log.done && pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+                          } catch { /* ignore poll errors */ }
+                        }, 1500);
+                        const result = await api.installCuda({ cuda_variant: form.cuda_variant, installSessionId: sessionId });
+                        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+                        setCudaProgress(100);
+                        // Final log fetch
+                        try { const log = await api.getInstallLog(sessionId); if (log.log) setCudaOutput(log.log); } catch { /* ignore */ }
                         const nextRuntimeChannel = result.runtimeChannel || form.runtime_channel;
                         setCudaInstalling(false);
                         setCudaStatus(
@@ -3679,12 +3696,12 @@ export function SettingsPage({
                             ? "CUDA 安装完成，请重启应用后切换到新的 GPU 运行环境"
                             : "CUDA 安装完成"
                         );
-                        setCudaOutput(result.stdoutTail || "");
                         setForm({ ...form, runtime_channel: nextRuntimeChannel, cuda_variant: result.cudaVariant || form.cuda_variant });
                         setIsDirty(false);
                         setEnvironment(await api.getEnvironment({ runtimeChannel: nextRuntimeChannel, refresh: true }));
                         onRefresh();
                       } catch (error) {
+                        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
                         setCudaInstalling(false);
                         setCudaStatus(error instanceof Error ? error.message : "CUDA 安装失败");
                       }
@@ -3697,6 +3714,11 @@ export function SettingsPage({
                   <div className="settings-form-group">
                     <div className="settings-input-group">
                       <span className="settings-input-label">CUDA 安装输出</span>
+                      {cudaInstalling && cudaProgress > 0 ? (
+                        <div className="progress-bar-simple" style={{ marginBottom: 8 }}>
+                          <div className="progress-fill-simple" style={{ width: `${cudaProgress}%` }} />
+                        </div>
+                      ) : null}
                       <textarea className="textarea-field log-viewer" rows={12} readOnly value={cudaOutput || (cudaInstalling ? "安装中..." : cudaStatus)} />
                     </div>
                   </div>
