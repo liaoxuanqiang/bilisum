@@ -128,7 +128,7 @@ def test_sanitized_subprocess_dll_search_windows_resets_dll_directory() -> None:
 
     with patch.object(os, "name", "nt"):
         with patch.object(runtime_module, "is_frozen", return_value=True):
-            with patch.object(runtime_module.ctypes, "windll", mock_kernel32):
+            with patch.object(runtime_module.ctypes, "windll", mock_kernel32, create=True):
                 with patch.object(runtime_module.ctypes, "create_unicode_buffer", return_value=prev_buffer):
                     with sanitized_subprocess_dll_search():
                         pass
