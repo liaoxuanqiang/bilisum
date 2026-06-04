@@ -22,7 +22,10 @@ if _original_add_dll_directory is not None:
         except (FileNotFoundError, OSError):
             return None
     _os.add_dll_directory = _safe_add_dll_directory
-del _os, _original_add_dll_directory
+# NOTE: Do NOT del _os / _original_add_dll_directory — in -c exec mode
+# the compiler may use LOAD_GLOBAL for the free variable reference in
+# the closure, and del removes the name from __main__, causing NameError
+# when the guard is later invoked via torch._load_dll_libraries.
 
 import importlib
 import importlib.metadata
