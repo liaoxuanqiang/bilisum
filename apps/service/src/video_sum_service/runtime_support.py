@@ -1350,6 +1350,11 @@ def detect_environment(runtime_channel: str | None = None) -> dict[str, object]:
         runtime_channel or settings_manager.current.runtime_channel,
         allow_unknown_gpu=True,
     )
+    # Ensure the DLL guard exists before running the probe subprocess.
+    # Must be BEFORE the cache check so that stale cached results don't
+    # prevent the guard from being written on first access.
+    _ensure_runtime_sitecustomize(active_channel)
+
     cached = _load_cached_environment_probe(active_channel)
     if cached is not None:
         return dict(cached)
