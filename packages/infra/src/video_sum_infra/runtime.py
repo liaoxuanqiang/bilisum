@@ -374,6 +374,9 @@ def runtime_library_dirs(runtime_channel: str) -> list[Path]:
     torch_lib_dir = runtime_site_packages_dir(runtime_channel) / "torch" / "lib"
     if torch_lib_dir.exists():
         candidates.append(torch_lib_dir)
+    torchaudio_lib_dir = runtime_site_packages_dir(runtime_channel) / "torchaudio" / "lib"
+    if torchaudio_lib_dir.exists():
+        candidates.append(torchaudio_lib_dir)
 
     nvidia_root = runtime_site_packages_dir(runtime_channel) / "nvidia"
     if nvidia_root.exists():
