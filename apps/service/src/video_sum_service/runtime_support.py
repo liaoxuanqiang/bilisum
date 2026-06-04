@@ -1980,13 +1980,19 @@ def install_funasr(reinstall: bool, repository: SqliteTaskRepository, *, session
     if use_streaming:
         finish_install_session(session_id, success=installed)
     _release_channel_lock(lock)
-    return {
+    result_payload: dict[str, object] = {
         "installed": installed,
         "runtimeChannel": runtime_channel,
         "installSessionId": session_id,
         "stdoutTail": ((result.stdout or "") + "\n" + (result.stderr or "")).strip()[-1500:],
         "environment": environment,
-    }, worker
+    }
+    # Surface probe error details when installation appears to fail so
+    # the UI (and user) can see the actual import error.
+    if not installed:
+        result_payload["funasrError"] = str(environment.get("funasrError") or "")
+        result_payload["torchError"] = str(environment.get("torchError") or "")
+    return result_payload, worker
 
 
 def install_knowledge_dependencies(
