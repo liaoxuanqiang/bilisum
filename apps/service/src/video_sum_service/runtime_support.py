@@ -163,6 +163,10 @@ def runtime_subprocess_env(runtime_channel: str) -> dict[str, str]:
         logger.warning("failed to prepare runtime temp dir path=%s", temp_dir)
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
+    # Propagate HuggingFace mirror to subprocess (funasr / sentence-transformers)
+    hf_endpoint = (settings_manager.current.hf_endpoint or "").strip()
+    if hf_endpoint:
+        env["HF_ENDPOINT"] = hf_endpoint
 
     path_entries = [str(path) for path in runtime_library_dirs(runtime_channel)]
     pythonpath_entries = [str(path) for path in runtime_pythonpath_dirs(runtime_channel)]
@@ -1705,6 +1709,8 @@ def serialize_settings(
         "knowledge_llm_api_key": "",
         "knowledge_llm_api_key_configured": bool(current_settings.knowledge_llm_api_key),
         "knowledge_enabled": current_settings.knowledge_enabled,
+        "knowledge_embedding_model": current_settings.knowledge_embedding_model,
+        "hf_endpoint": current_settings.hf_endpoint,
         "knowledge_index_auto_rebuild": current_settings.knowledge_index_auto_rebuild,
         "summary_system_prompt": current_settings.summary_system_prompt,
         "summary_user_prompt_template": current_settings.summary_user_prompt_template,

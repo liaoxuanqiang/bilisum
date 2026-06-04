@@ -111,6 +111,8 @@ class SettingsUpdatePayload(BaseModel):
     knowledge_llm_api_key: str | None = None
     knowledge_index_auto_rebuild: str | None = None
     knowledge_enabled: bool | None = None
+    knowledge_embedding_model: str | None = None
+    hf_endpoint: str | None = None
     summary_system_prompt: str | None = None
     summary_user_prompt_template: str | None = None
     knowledge_note_system_prompt: str | None = None

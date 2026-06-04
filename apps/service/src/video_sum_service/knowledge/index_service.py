@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import json
+import os
 import logging
 import re
 import sys
@@ -37,11 +38,11 @@ class KnowledgeIndexService:
         repository: SqliteTaskRepository,
         settings: ServiceSettings,
         chroma_path: str | Path | None = None,
-        model_name: str = "BAAI/bge-small-zh-v1.5",
+        model_name: str = "",
     ) -> None:
         self._repository = repository
         self._settings = settings
-        self._model_name = model_name
+        self._model_name = model_name or settings.knowledge_embedding_model
         self._chroma_path = Path(chroma_path or (app_data_root() / "knowledge_index"))
         self._embedder = None
         self._collection = None
@@ -92,12 +93,16 @@ class KnowledgeIndexService:
                 "缺少 sentence-transformers 依赖，无法构建知识库索引。",
             )
             try:
+                # Apply user-configured HuggingFace mirror / endpoint
+                if self._settings.hf_endpoint:
+                    os.environ["HF_ENDPOINT"] = self._settings.hf_endpoint
                 self._embedder = sentence_transformers.SentenceTransformer(self._model_name)
             except Exception as exc:
                 logger.exception(
-                    "knowledge embedding model load failed model=%s runtime_channel=%s",
+                    "knowledge embedding model load failed model=%s runtime_channel=%s hf_endpoint=%s",
                     self._model_name,
                     self._settings.runtime_channel,
+                    self._settings.hf_endpoint or "(default)",
                 )
                 raise HTTPException(
                     status_code=500,
