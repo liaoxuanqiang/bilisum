@@ -31,6 +31,7 @@ from video_sum_infra.config import (
     ServiceSettings,
 )
 from video_sum_infra.runtime import (
+    _move_preserved_runtime_extensions,
     activate_runtime_pythonpath,
     bootstrap_managed_runtime,
     ffmpeg_location,
@@ -377,13 +378,15 @@ class _StreamingRunner:
     :meth:`cancel` can kill the subprocess if an exception occurs mid-install.
     """
 
-    def __init__(self, session_id: str):
+    def __init__(self, session_id: str, *, env: dict[str, str] | None = None, cwd: Path | None = None):
         self.session_id = session_id
+        self._env = env
+        self._cwd = cwd
         self._proc: subprocess.Popen[str] | None = None
 
     def __call__(self, command: list[str], runtime_channel: str, timeout: int = 3600) -> subprocess.CompletedProcess[str]:
-        env = runtime_subprocess_env(runtime_channel)
-        cwd = managed_runtime_dir(runtime_channel)
+        env = self._env if self._env is not None else runtime_subprocess_env(runtime_channel)
+        cwd = self._cwd if self._cwd is not None else managed_runtime_dir(runtime_channel)
         append_install_log(self.session_id, f"$ {' '.join(command)}\n")
 
         with sanitized_subprocess_dll_search():
@@ -903,6 +906,10 @@ def replace_runtime_with_base_copy(
         raise
     else:
         if backup_dir.exists():
+            # Restore user-installed extension packages (funasr, chromadb, etc.)
+            # that would otherwise be silently lost when the GPU channel is
+            # rebuilt from a clean base copy.
+            _move_preserved_runtime_extensions(backup_dir, target_dir)
             shutil.rmtree(backup_dir, ignore_errors=True)
 
 
@@ -1741,8 +1748,16 @@ def install_local_asr(reinstall: bool, repository: SqliteTaskRepository, *, sess
     lock = _acquire_channel_lock(runtime_channel)
     if lock is None:
         raise HTTPException(status_code=409, detail="另一个安装或同步操作正在进行中，请稍后重试。")
-    runtime_dir = ensure_runtime_channel(runtime_channel)
-    python_executable = runtime_python_executable(runtime_channel)
+
+    use_current_python = uses_current_service_python(runtime_channel)
+    if use_current_python:
+        runtime_dir = repo_root()
+        python_executable = Path(sys.executable)
+        runner = lambda command, runtime_channel, timeout=1800: run_host_command(command, timeout=timeout)
+    else:
+        runtime_dir = ensure_runtime_channel(runtime_channel)
+        python_executable = runtime_python_executable(runtime_channel)
+        runner = run_command
     if runtime_dir is None or python_executable is None:
         raise HTTPException(status_code=500, detail="Managed runtime is unavailable.")
 
@@ -1764,11 +1779,24 @@ def install_local_asr(reinstall: bool, repository: SqliteTaskRepository, *, sess
     use_streaming = session_id is not None
     if use_streaming:
         start_install_session(session_id, "本地 ASR")
-    runner = _StreamingRunner(session_id) if use_streaming else run_command
+    if use_streaming and use_current_python:
+        host_env = dict(os.environ)
+        for key in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "__PYVENV_LAUNCHER__"):
+            host_env.pop(key, None)
+        host_env["PYTHONIOENCODING"] = "utf-8"
+        host_env["PYTHONUTF8"] = "1"
+        pip_runner: _StreamingRunner | object = _StreamingRunner(session_id, env=host_env, cwd=repo_root())
+    elif use_streaming:
+        pip_runner = _StreamingRunner(session_id)
+    else:
+        pip_runner = runner
 
     try:
-        install_workspace_packages(python_executable, runtime_channel=runtime_channel)
-        ensure_runtime_pip(python_executable, runtime_channel)
+        if not use_current_python:
+            install_workspace_packages(python_executable, runtime_channel=runtime_channel)
+            ensure_runtime_pip(python_executable, runtime_channel)
+        else:
+            ensure_python_pip(python_executable, runtime_channel, runner=runner)
         result = _run_pip_install(
             python_executable,
             runtime_channel,
@@ -1776,18 +1804,18 @@ def install_local_asr(reinstall: bool, repository: SqliteTaskRepository, *, sess
             package_label="本地 ASR 依赖",
             reinstall=reinstall,
             timeout=1800,
-            runner=runner,
+            runner=pip_runner,
         )
     except subprocess.CalledProcessError as exc:
-        if isinstance(runner, _StreamingRunner):
-            runner.cancel()
+        if isinstance(pip_runner, _StreamingRunner):
+            pip_runner.cancel()
             finish_install_session(session_id, success=False)
         clear_environment_probe_cache(runtime_channel)
         _release_channel_lock(lock)
         raise HTTPException(status_code=500, detail=((exc.stderr or exc.stdout or str(exc))[-1500:])) from exc
     except HTTPException:
-        if isinstance(runner, _StreamingRunner):
-            runner.cancel()
+        if isinstance(pip_runner, _StreamingRunner):
+            pip_runner.cancel()
             finish_install_session(session_id, success=False)
         clear_environment_probe_cache(runtime_channel)
         _release_channel_lock(lock)
@@ -1827,31 +1855,38 @@ def install_funasr(reinstall: bool, repository: SqliteTaskRepository, *, session
     if lock is None:
         raise HTTPException(status_code=409, detail="另一个安装或同步操作正在进行中，请稍后重试。")
 
-    # Pre-flight: if the runtime channel is broken (e.g. Python binary missing
-    # after a partial upgrade or corrupted pip/setuptools), force-rebuild it
-    # from scratch before attempting any pip work.
-    python_executable = runtime_python_executable(runtime_channel)
-    if python_executable is None:
-        logger.warning("runtime channel %s has no python — forcing full rebuild", runtime_channel)
-        target_dir = managed_runtime_dir(runtime_channel)
-        if target_dir.exists():
-            _robust_rmtree(target_dir)
-        # Also clean stale backup/temp dirs
-        for stale in [
-            runtime_refresh_backup_dir(runtime_channel),
-            target_dir.parent / f".{runtime_channel}-refresh-backup-temp",
-            target_dir.parent / f".{runtime_channel}-refresh-temp",
-        ]:
-            if stale.exists():
-                _robust_rmtree(stale)
+    use_current_python = uses_current_service_python(runtime_channel)
+    if use_current_python:
+        runtime_dir = repo_root()
+        python_executable = Path(sys.executable)
+        runner = lambda command, runtime_channel, timeout=1800: run_host_command(command, timeout=timeout)
+    else:
+        # Pre-flight: if the runtime channel is broken (e.g. Python binary missing
+        # after a partial upgrade or corrupted pip/setuptools), force-rebuild it
+        # from scratch before attempting any pip work.
+        python_executable = runtime_python_executable(runtime_channel)
+        if python_executable is None:
+            logger.warning("runtime channel %s has no python — forcing full rebuild", runtime_channel)
+            target_dir = managed_runtime_dir(runtime_channel)
+            if target_dir.exists():
+                _robust_rmtree(target_dir)
+            # Also clean stale backup/temp dirs
+            for stale in [
+                runtime_refresh_backup_dir(runtime_channel),
+                target_dir.parent / f".{runtime_channel}-refresh-backup-temp",
+                target_dir.parent / f".{runtime_channel}-refresh-temp",
+            ]:
+                if stale.exists():
+                    _robust_rmtree(stale)
 
-    runtime_dir = ensure_runtime_channel(runtime_channel)
-    python_executable = runtime_python_executable(runtime_channel)
-    if runtime_dir is None or python_executable is None:
-        raise HTTPException(status_code=500, detail=(
-            "运行环境创建失败。请尝试：1) 重启应用 2) 设置 → 运行环境 → 同步需要更新的 runtime "
-            "3) 手动删除 %s 后重试" % managed_runtime_dir(runtime_channel)
-        ))
+        runtime_dir = ensure_runtime_channel(runtime_channel)
+        python_executable = runtime_python_executable(runtime_channel)
+        if runtime_dir is None or python_executable is None:
+            raise HTTPException(status_code=500, detail=(
+                "运行环境创建失败。请尝试：1) 重启应用 2) 设置 → 运行环境 → 同步需要更新的 runtime "
+                "3) 手动删除 %s 后重试" % managed_runtime_dir(runtime_channel)
+            ))
+        runner = run_command
 
     # W10: disk space pre-check
     cache_dir = Path.home() / ".cache" / "modelscope"
@@ -1866,13 +1901,26 @@ def install_funasr(reinstall: bool, repository: SqliteTaskRepository, *, session
     use_streaming = session_id is not None
     if use_streaming:
         start_install_session(session_id, "FunASR")
-    runner = _StreamingRunner(session_id) if use_streaming else run_command
+    if use_streaming and use_current_python:
+        host_env = dict(os.environ)
+        for key in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "__PYVENV_LAUNCHER__"):
+            host_env.pop(key, None)
+        host_env["PYTHONIOENCODING"] = "utf-8"
+        host_env["PYTHONUTF8"] = "1"
+        pip_runner: _StreamingRunner | object = _StreamingRunner(session_id, env=host_env, cwd=repo_root())
+    elif use_streaming:
+        pip_runner = _StreamingRunner(session_id)
+    else:
+        pip_runner = runner
 
     try:
-        # install_workspace_packages bootstraps pip + workspace packages.
-        # GPU runtimes already use --no-deps, so workspace reinstall is safe.
-        install_workspace_packages(python_executable, runtime_channel=runtime_channel)
-        ensure_runtime_pip(python_executable, runtime_channel)
+        if not use_current_python:
+            # install_workspace_packages bootstraps pip + workspace packages.
+            # GPU runtimes already use --no-deps, so workspace reinstall is safe.
+            install_workspace_packages(python_executable, runtime_channel=runtime_channel)
+            ensure_runtime_pip(python_executable, runtime_channel)
+        else:
+            ensure_python_pip(python_executable, runtime_channel, runner=runner)
 
         # C1: Probe installed torch before deciding what to install.
         # On GPU channels the user already has CUDA torch — never install
@@ -1880,7 +1928,7 @@ def install_funasr(reinstall: bool, repository: SqliteTaskRepository, *, session
         # install list when they are genuinely missing.
         funasr_packages = ["funasr>=1.1.0"]
         try:
-            result = run_command(
+            result = runner(
                 [str(python_executable), "-c", "import torch; print(torch.__version__)"],
                 runtime_channel=runtime_channel,
                 timeout=30,
@@ -1897,18 +1945,18 @@ def install_funasr(reinstall: bool, repository: SqliteTaskRepository, *, session
             package_label="FunASR 依赖",
             reinstall=reinstall,
             timeout=3600,
-            runner=runner,
+            runner=pip_runner,
         )
     except subprocess.CalledProcessError as exc:
-        if isinstance(runner, _StreamingRunner):
-            runner.cancel()
+        if isinstance(pip_runner, _StreamingRunner):
+            pip_runner.cancel()
             finish_install_session(session_id, success=False)
         clear_environment_probe_cache(runtime_channel)
         _release_channel_lock(lock)
         raise HTTPException(status_code=500, detail=((exc.stderr or exc.stdout or str(exc))[-1500:])) from exc
     except HTTPException:
-        if isinstance(runner, _StreamingRunner):
-            runner.cancel()
+        if isinstance(pip_runner, _StreamingRunner):
+            pip_runner.cancel()
             finish_install_session(session_id, success=False)
         clear_environment_probe_cache(runtime_channel)
         _release_channel_lock(lock)
