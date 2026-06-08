@@ -34,6 +34,7 @@ type DesktopPreferences = {
   autoLaunch: boolean;
   silentStart: boolean;
   crashAutoRestart: boolean;
+  developerMode: boolean;
   themePreference?: ThemePreference;
   lastOpenedVersion?: string;
   lastSeenAnnouncementVersion?: string;
@@ -834,6 +835,7 @@ function loadPreferences(): DesktopPreferences {
       autoLaunch: false,
       silentStart: false,
       crashAutoRestart: false,
+      developerMode: false,
       ...JSON.parse(raw),
     };
   } catch {
@@ -843,6 +845,7 @@ function loadPreferences(): DesktopPreferences {
       autoLaunch: false,
       silentStart: false,
       crashAutoRestart: false,
+      developerMode: false,
     };
   }
 }
@@ -2212,6 +2215,11 @@ function createWindow() {
   if (!getStartupHidden()) {
     mainWindow.show();
   }
+
+  // 如果开发者模式已开启，自动打开 DevTools
+  if (preferences.developerMode) {
+    mainWindow.webContents.openDevTools();
+  }
 }
 
 function createTray() {
@@ -2642,6 +2650,20 @@ function registerIpcHandlers() {
     preferences = { ...preferences, crashAutoRestart: Boolean(enabled) };
     savePreferences();
     return preferences.crashAutoRestart;
+  });
+  ipcMain.handle("desktop:preferences:get-developer-mode", () => getPreferences().developerMode);
+  ipcMain.handle("desktop:preferences:set-developer-mode", (_event, enabled: boolean) => {
+    preferences = { ...preferences, developerMode: Boolean(enabled) };
+    savePreferences();
+    // 开启或关闭开发者工具
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (enabled) {
+        mainWindow.webContents.openDevTools();
+      } else {
+        mainWindow.webContents.closeDevTools();
+      }
+    }
+    return preferences.developerMode;
   });
   ipcMain.handle("desktop:preferences:set-close-behavior", (_event, value: CloseBehavior) => {
     setCloseBehavior(value, true);

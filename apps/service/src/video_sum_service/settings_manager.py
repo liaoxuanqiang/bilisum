@@ -51,6 +51,7 @@ class SettingsUpdatePayload(BaseModel):
     whisper_device: str | None = None
     whisper_compute_type: str | None = None
     transcription_provider: str | None = None
+    prefer_bilibili_subtitle: bool | None = None
     device_preference: str | None = None
     compute_type: str | None = None
     model_mode: str | None = None

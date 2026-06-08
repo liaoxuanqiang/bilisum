@@ -223,6 +223,9 @@ const desktop = {
     getCrashAutoRestart: () => ipcRenderer.invoke("desktop:preferences:get-crash-auto-restart") as Promise<boolean>,
     setCrashAutoRestart: (enabled: boolean) =>
       ipcRenderer.invoke("desktop:preferences:set-crash-auto-restart", enabled) as Promise<boolean>,
+    getDeveloperMode: () => ipcRenderer.invoke("desktop:preferences:get-developer-mode") as Promise<boolean>,
+    setDeveloperMode: (enabled: boolean) =>
+      ipcRenderer.invoke("desktop:preferences:set-developer-mode", enabled) as Promise<boolean>,
   },
   update: {
     check: () => ipcRenderer.invoke("desktop:update:check") as Promise<UpdateInfo>,

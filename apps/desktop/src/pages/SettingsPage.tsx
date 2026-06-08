@@ -265,6 +265,7 @@ export function SettingsPage({
   const [autoLaunchEnabled, setAutoLaunchEnabled] = useState(false);
   const [silentStartEnabled, setSilentStartEnabled] = useState(false);
   const [crashAutoRestart, setCrashAutoRestart] = useState(false);
+  const [developerModeEnabled, setDeveloperModeEnabled] = useState(false);
   const [logAutoRefresh, setLogAutoRefresh] = useState(false);
   const [logLevelFilter, setLogLevelFilter] = useState<"all" | "ERROR" | "WARNING" | "INFO">("all");
   const logTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -272,16 +273,18 @@ export function SettingsPage({
   // Load desktop preferences once
   useEffect(() => {
     void (async () => {
-      const [cb, al, ss, cr] = await Promise.all([
+      const [cb, al, ss, cr, dm] = await Promise.all([
         window.desktop?.preferences?.getCloseBehavior(),
         window.desktop?.app?.getAutoLaunch(),
         window.desktop?.preferences?.getSilentStart(),
         window.desktop?.preferences?.getCrashAutoRestart(),
+        window.desktop?.preferences?.getDeveloperMode(),
       ]);
       if (cb) setCloseBehavior(cb as "tray" | "exit");
       if (typeof al === "boolean") setAutoLaunchEnabled(al);
       if (typeof ss === "boolean") setSilentStartEnabled(ss);
       if (typeof cr === "boolean") setCrashAutoRestart(cr);
+      if (typeof dm === "boolean") setDeveloperModeEnabled(dm);
     })();
   }, []);
 
@@ -1116,6 +1119,11 @@ export function SettingsPage({
     }
   }, [funasrInstalled]);
 
+  // Load embedding presets on mount
+  useEffect(() => {
+    api.getEmbeddingPresets().then(r => setEmbeddingPresets(r.presets || {})).catch(() => {});
+  }, []);
+
   if (!form) return <section className="grid-card empty-state-card">正在加载设置...</section>;
 
   const usesSiliconFlowAsr = form.transcription_provider === "siliconflow";
@@ -1611,11 +1619,6 @@ export function SettingsPage({
       setEmbeddingTesting(false);
     }
   }
-
-  // Load embedding presets on mount
-  useEffect(() => {
-    api.getEmbeddingPresets().then(r => setEmbeddingPresets(r.presets || {})).catch(() => {});
-  }, []);
 
   async function captureBilibiliLoginCookies() {
     if (!form || bilibiliCookieCapturing) {
@@ -2550,6 +2553,24 @@ export function SettingsPage({
                   </select>
                   <span className="settings-input-caption">默认推荐云端模式（硅基流动的语音识别是免费的！只需要注册然后填上apikey就可以用了）。</span>
                 </label>
+
+                <div className="settings-input-group">
+                  <div className="settings-toggle-row">
+                    <div className="settings-toggle-label">
+                      <span className="settings-toggle-title">优先使用 UP 主字幕</span>
+                      <span className="settings-toggle-caption">开启后，BiliSum 会尝试从 B 站 API 获取视频自带字幕（CC 字幕、UP 主上传字幕）。如果字幕存在且完整，将跳过 ASR 转写，节省时间。字幕不存在时自动使用 ASR。</span>
+                    </div>
+                    <label className="toggle-switch">
+                      <input
+                        type="checkbox"
+                        checked={form.prefer_bilibili_subtitle || false}
+                        onChange={(e) => updateForm({ ...form, prefer_bilibili_subtitle: e.target.checked })}
+                      />
+                      <span className="toggle-slider" />
+                    </label>
+                  </div>
+                </div>
+
                 {usesSiliconFlowAsr ? (
                   <>
                     <label
@@ -4114,6 +4135,15 @@ export function SettingsPage({
                         <span className="settings-toggle-caption">后端服务非预期退出时自动拉起。</span>
                       </div>
                       <label className="toggle-switch"><input type="checkbox" checked={crashAutoRestart} onChange={async (e) => { const v = e.target.checked; setCrashAutoRestart(v); await window.desktop?.preferences?.setCrashAutoRestart(v); }} /><span className="toggle-slider" /></label>
+                    </div>
+                  </div>
+                  <div className="settings-input-group">
+                    <div className="settings-toggle-row">
+                      <div className="settings-toggle-label">
+                        <span className="settings-toggle-title">开发者模式</span>
+                        <span className="settings-toggle-caption">开启后显示后台日志和浏览器开发者工具，便于调试问题。</span>
+                      </div>
+                      <label className="toggle-switch"><input type="checkbox" checked={developerModeEnabled} onChange={async (e) => { const v = e.target.checked; setDeveloperModeEnabled(v); await window.desktop?.preferences?.setDeveloperMode(v); }} /><span className="toggle-slider" /></label>
                     </div>
                   </div>
                   <label className="settings-input-group">

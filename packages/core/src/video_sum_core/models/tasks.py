@@ -40,6 +40,7 @@ class TaskResult(BaseModel):
     overview: str = ""
     knowledge_note_markdown: str = ""
     transcript_text: str = ""
+    segments: list[dict[str, object]] = Field(default_factory=list)
     segment_summaries: list[str] = Field(default_factory=list)
     key_points: list[str] = Field(default_factory=list)
     timeline: list[dict[str, object]] = Field(default_factory=list)

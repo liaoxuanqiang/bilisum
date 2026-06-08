@@ -578,3 +578,181 @@ def _probe_multimodal_asr(settings: ServiceSettings) -> dict[str, object]:
         "baseUrl": base_url,
         "responsePreview": transcript[:120],
     }
+
+
+def fetch_bilibili_subtitle(
+    aid: int | str,
+    cid: int | str,
+    cookie: str | None = None,
+    bvid: str | None = None,
+) -> dict[str, object] | None:
+    """
+    从 Bilibili API 获取视频字幕（包括 AI 字幕）。
+
+    Args:
+        aid: Bilibili 视频 AV 号
+        cid: Bilibili 视频分 P 的 CID
+        cookie: Bilibili Cookie（可选）
+        bvid: Bilibili 视频 BV 号（优先使用）
+
+    Returns:
+        成功返回 {"transcript": "全文", "segments": [{"start": 0.0, "end": 1.5, "text": "..."}]}
+        失败或无字幕返回 None
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.bilibili.com/"}
+        if cookie:
+            headers["Cookie"] = cookie
+
+        # 如果没有 bvid，尝试从 aid 获取
+        if not bvid:
+            try:
+                with httpx.Client(timeout=10.0) as client:
+                    resp = client.get(
+                        f"https://api.bilibili.com/x/web-interface/view?aid={aid}",
+                        headers=headers
+                    )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    bvid = data.get("data", {}).get("bvid")
+            except Exception:
+                pass
+
+        subtitles = []
+
+        # 方法1：WBI API（获取 UP 主上传的字幕）
+        if bvid:
+            try:
+                wbi_url = f"https://api.bilibili.com/x/player/wbi/v2?bvid={bvid}&cid={cid}"
+                with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+                    wbi_resp = client.get(wbi_url, headers=headers)
+
+                if wbi_resp.status_code == 200:
+                    wbi_data = wbi_resp.json()
+                    if wbi_data.get("code") == 0:
+                        subtitles = wbi_data.get("data", {}).get("subtitle", {}).get("subtitles", [])
+                        if subtitles:
+                            logger.info("bilibili subtitle fetched via WBI API (UP主字幕)")
+            except Exception as e:
+                logger.debug("WBI API failed: %s", e)
+
+        # 方法2：弹幕 API（获取 AI 字幕）
+        if not subtitles:
+            try:
+                dm_url = f"https://api.bilibili.com/x/v2/dm/view?type=1&oid={cid}&pid={aid}"
+                with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+                    dm_resp = client.get(dm_url, headers=headers)
+
+                if dm_resp.status_code == 200:
+                    dm_data = dm_resp.json()
+                    if dm_data.get("code") == 0:
+                        subtitles = dm_data.get("data", {}).get("subtitle", {}).get("subtitles", [])
+                        if subtitles:
+                            logger.info("bilibili subtitle fetched via dm/view API (AI字幕)")
+            except Exception as e:
+                logger.debug("dm/view API failed: %s", e)
+
+        if not subtitles:
+            logger.info("bilibili video has no subtitles aid=%s cid=%s", aid, cid)
+            return None
+
+        # 智能选择字幕：优先非 AI、非摘要的中文字幕
+        selected_subtitle = None
+        logger.debug("Available subtitles: %s", [(s.get("lan_doc"), s.get("lan")) for s in subtitles])
+
+        # 优先级1：非 AI、非摘要的中文字幕（UP主上传）
+        for sub in subtitles:
+            lan_doc = sub.get("lan_doc", "")
+            lan = sub.get("lan", "")
+            if "摘要" not in lan_doc and "ai-" not in lan and ("中文" in lan_doc or "zh-" in lan or lan == "zh"):
+                selected_subtitle = sub
+                logger.info("Selected subtitle: %s (priority: non-AI Chinese)", lan_doc)
+                break
+
+        # 优先级2：AI 中文字幕
+        if not selected_subtitle:
+            for sub in subtitles:
+                lan = sub.get("lan", "")
+                lan_doc = sub.get("lan_doc", "")
+                if lan == "ai-zh" or ("中文" in lan_doc and "ai-" in lan):
+                    selected_subtitle = sub
+                    logger.info("Selected subtitle: %s (priority: AI Chinese)", lan_doc)
+                    break
+
+        # 优先级3：任意中文字幕
+        if not selected_subtitle:
+            for sub in subtitles:
+                lan_doc = sub.get("lan_doc", "")
+                lan = sub.get("lan", "")
+                if "中文" in lan_doc or "zh" in lan:
+                    selected_subtitle = sub
+                    logger.info("Selected subtitle: %s (priority: any Chinese)", lan_doc)
+                    break
+
+        # 优先级4：第一个可用字幕
+        if not selected_subtitle:
+            selected_subtitle = subtitles[0]
+            logger.info("Selected subtitle: %s (fallback: first available)", selected_subtitle.get("lan_doc"))
+
+        subtitle_url = selected_subtitle.get("subtitle_url")
+        if not subtitle_url:
+            logger.warning("bilibili subtitle entry has no url")
+            return None
+
+        # 确保 URL 包含协议
+        if subtitle_url.startswith("//"):
+            subtitle_url = "https:" + subtitle_url
+        elif subtitle_url.startswith("http://"):
+            subtitle_url = subtitle_url.replace("http://", "https://")
+
+        # 下载字幕 JSON
+        with httpx.Client(timeout=15.0, follow_redirects=True) as client:
+            sub_resp = client.get(subtitle_url, headers=headers)
+
+        if sub_resp.status_code != 200:
+            logger.warning("bilibili subtitle download failed status=%s", sub_resp.status_code)
+            return None
+
+        subtitle_data = sub_resp.json()
+
+        # 支持多种字幕 JSON 格式
+        body_list = (
+            subtitle_data.get("body") if isinstance(subtitle_data.get("body"), list) else None
+        ) or (
+            subtitle_data.get("data", {}).get("body") if isinstance(subtitle_data.get("data", {}).get("body"), list) else None
+        ) or (
+            subtitle_data.get("result", {}).get("body") if isinstance(subtitle_data.get("result", {}).get("body"), list) else None
+        ) or (
+            subtitle_data.get("subtitle", {}).get("body") if isinstance(subtitle_data.get("subtitle", {}).get("body"), list) else None
+        ) or []
+
+        if not body_list:
+            logger.warning("bilibili subtitle body is empty or invalid, tried all known formats")
+            return None
+
+        # 转换为 transcript 格式
+        segments = []
+        transcript_parts = []
+        for item in body_list:
+            start = float(item.get("from", 0.0))
+            end = float(item.get("to", 0.0))
+            text = str(item.get("content", "")).strip()
+            if text:
+                segments.append({"start": start, "end": end, "text": text})
+                transcript_parts.append(text)
+
+        if not segments:
+            logger.warning("bilibili subtitle has no valid segments")
+            return None
+
+        transcript = "\n".join(transcript_parts)
+        logger.info("bilibili subtitle fetched successfully segments=%d chars=%d", len(segments), len(transcript))
+        return {"transcript": transcript, "segments": segments}
+
+    except Exception as exc:
+        logger.warning("bilibili subtitle fetch failed: %s", exc, exc_info=True)
+        return None

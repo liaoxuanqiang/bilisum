@@ -2722,7 +2722,20 @@ export function VideoDetailPage({ refreshToken = 0, onRefresh, onOpenCookieSetti
                         </button>
                       </div>
                     </div>
-                    <pre className="transcript-full">{selectedTranscript || "暂无转写全文。"}</pre>
+                    {selectedResult?.segments && selectedResult.segments.length > 0 ? (
+                      <div className="transcript-with-timestamps">
+                        {selectedResult.segments.map((seg, idx) => (
+                          <div key={idx} className="transcript-segment">
+                            <span className="transcript-timestamp">
+                              [{Math.floor(seg.start / 60)}:{String(Math.floor(seg.start % 60)).padStart(2, '0')}]
+                            </span>
+                            <span className="transcript-text">{seg.text}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <pre className="transcript-full">{selectedTranscript || "暂无转写全文。"}</pre>
+                    )}
                   </section>
 
                 </section>

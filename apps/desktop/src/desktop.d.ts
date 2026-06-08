@@ -124,6 +124,8 @@ type DesktopBridge = {
     setSilentStart(enabled: boolean): Promise<boolean>;
     getCrashAutoRestart(): Promise<boolean>;
     setCrashAutoRestart(enabled: boolean): Promise<boolean>;
+    getDeveloperMode(): Promise<boolean>;
+    setDeveloperMode(enabled: boolean): Promise<boolean>;
   };
   logs: {
     getServiceLogPath(): Promise<string>;

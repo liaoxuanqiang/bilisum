@@ -3092,7 +3092,42 @@
   font-size: 0.9rem;
   font-family: var(--font-mono);
   line-height: 1.7;
-  white-space: pre-wrap;
+}
+
+.transcript-with-timestamps {
+  max-height: 620px;
+  overflow: auto;
+  padding: 18px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-soft);
+}
+
+.transcript-segment {
+  display: flex;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-faint);
+}
+
+.transcript-segment:last-child {
+  border-bottom: none;
+}
+
+.transcript-timestamp {
+  flex-shrink: 0;
+  width: 50px;
+  color: var(--text-tertiary);
+  font-size: 0.85rem;
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+.transcript-text {
+  flex: 1;
+  color: var(--detail-copy-muted);
+  font-size: 0.9rem;
+  line-height: 1.7;
 }
 
 .detail-state-panel {

@@ -1644,6 +1644,7 @@ def serialize_settings(
         "tasks_dir": str(current_settings.tasks_dir),
         "database_url": current_settings.database_url,
         "transcription_provider": current_settings.transcription_provider,
+        "prefer_bilibili_subtitle": current_settings.prefer_bilibili_subtitle,
         "whisper_model": runtime_settings.whisper_model,
         "whisper_device": runtime_settings.whisper_device,
         "whisper_compute_type": runtime_settings.whisper_compute_type,

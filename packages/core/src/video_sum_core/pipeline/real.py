@@ -188,6 +188,7 @@ class PipelineSettings:
     data_dir: Path | str | None = None
     runtime_channel: str = "base"
     transcription_provider: str = "siliconflow"
+    prefer_bilibili_subtitle: bool = True
     whisper_model: str = "tiny"
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
@@ -351,8 +352,84 @@ class RealPipelineRunner(PipelineRunner):
             "视频信息读取完成",
             {"title": title, "duration": metadata.get("duration")},
         )
-        audio_path = self._download_audio(normalized_url, task_dir, safe_title, emit)
-        transcript, segments = self._transcribe(audio_path, metadata.get("duration"), emit)
+
+        # 尝试获取 Bilibili 字幕
+        transcript, segments = None, []
+        logger.info(
+            "bilibili subtitle check: prefer=%s platform=%s",
+            self._settings.prefer_bilibili_subtitle,
+            normalized.platform,
+        )
+        if self._settings.prefer_bilibili_subtitle and normalized.platform == "bilibili":
+            emit("fetching_subtitle", 18, "正在尝试获取字幕")
+            try:
+                from video_sum_service.integrations import fetch_bilibili_subtitle
+
+                # yt-dlp 返回的 B 站 metadata：
+                # - id: BV 号（不是 aid）
+                # - cid: 可能在 formats 或其他地方
+                bvid = metadata.get("id")  # 这是 BV 号
+                aid = None
+                cid = None
+
+                # 从 formats 中提取 cid（B 站特有）
+                formats = metadata.get("formats", [])
+                if formats and isinstance(formats, list):
+                    for fmt in formats:
+                        if isinstance(fmt, dict):
+                            # B 站的 format URL 通常包含 cid 参数
+                            fmt_url = fmt.get("url", "")
+                            if "cid=" in fmt_url:
+                                import re
+                                match = re.search(r'cid=(\d+)', fmt_url)
+                                if match:
+                                    cid = int(match.group(1))
+                                    break
+
+                # 如果有 BV 号但没有 aid，从 API 获取
+                if bvid and not aid:
+                    try:
+                        import httpx
+                        with httpx.Client(timeout=5.0) as client:
+                            resp = client.get(
+                                f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}",
+                                headers={"User-Agent": "Mozilla/5.0"}
+                            )
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            if data.get("code") == 0:
+                                aid = data.get("data", {}).get("aid")
+                                if not cid:
+                                    cid = data.get("data", {}).get("cid")
+                    except Exception as e:
+                        logger.debug("Failed to get aid/cid from API: %s", e)
+
+                logger.info("Extracted bvid=%s aid=%s cid=%s", bvid, aid, cid)
+
+                if aid and cid:
+                    cookie = self._extract_cookie_for_bilibili()
+                    subtitle_result = fetch_bilibili_subtitle(aid, cid, cookie, bvid=bvid)
+                    if subtitle_result:
+                        transcript = subtitle_result["transcript"]
+                        segments = subtitle_result["segments"]
+                        emit("fetching_subtitle", 52, f"已获取字幕，共 {len(segments)} 段，跳过转写")
+                        logger.info(
+                            "bilibili subtitle used task_id=%s segments=%d chars=%d",
+                            context.task_id,
+                            len(segments),
+                            len(transcript),
+                        )
+                else:
+                    logger.warning("bilibili metadata missing aid=%s cid=%s, fallback to ASR", aid, cid)
+            except Exception as exc:
+                logger.warning("bilibili subtitle fetch failed, fallback to ASR: %s", exc, exc_info=True)
+                emit("fetching_subtitle", 20, "字幕获取失败，使用 ASR 转写")
+
+        # 如果字幕未获取，使用原 ASR 流程
+        if not transcript:
+            audio_path = self._download_audio(normalized_url, task_dir, safe_title, emit)
+            transcript, segments = self._transcribe(audio_path, metadata.get("duration"), emit)
+
         transcript_result = self._export_transcript_snapshot(task_dir, title, transcript, segments)
         emit(
             "transcribing",
@@ -820,6 +897,35 @@ class RealPipelineRunner(PipelineRunner):
             raise VideoSumError("Audio download failed.")
         emit("downloading", 48, "音频文件已就绪")
         return candidates[0]
+
+    def _extract_cookie_for_bilibili(self) -> str | None:
+        """从 yt-dlp cookie 配置中提取 Bilibili cookie"""
+        try:
+            options = self._base_ydl_options()
+            cookiefile = options.get("cookiefile")
+            if cookiefile:
+                from pathlib import Path
+
+                cookie_path = Path(str(cookiefile))
+                if cookie_path.exists():
+                    # 读取 Netscape cookie 格式，提取 bilibili.com 的 cookie
+                    cookie_parts = []
+                    with open(cookie_path, encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith("#"):
+                                continue
+                            parts = line.split("\t")
+                            if len(parts) >= 7 and "bilibili.com" in parts[0]:
+                                name, value = parts[5], parts[6]
+                                cookie_parts.append(f"{name}={value}")
+                    if cookie_parts:
+                        return "; ".join(cookie_parts)
+            # Fallback: 尝试从 cookiesfrombrowser 获取（但这需要浏览器环境，暂不实现）
+            return None
+        except Exception as exc:
+            logger.warning("failed to extract bilibili cookie: %s", exc)
+            return None
 
     def _build_download_message(
         self,
@@ -2122,7 +2228,7 @@ class RealPipelineRunner(PipelineRunner):
             95,
             "知识卡片摘要生成完成",
             {
-                "result": self._build_task_result(transcript, summary).model_dump(mode="json"),
+                "result": self._build_task_result(transcript, summary, segments).model_dump(mode="json"),
                 "result_scope": "knowledge_cards",
             },
         )
@@ -2162,7 +2268,7 @@ class RealPipelineRunner(PipelineRunner):
                     98,
                     "知识笔记生成完成",
                     {
-                        "result": self._build_task_result(transcript, summary).model_dump(mode="json"),
+                        "result": self._build_task_result(transcript, summary, segments).model_dump(mode="json"),
                         "result_scope": "knowledge_note",
                     },
                 )
@@ -5516,6 +5622,7 @@ P 数索引：
         return self._build_task_result(
             transcript,
             summary,
+            segments,
             artifacts={
                 "transcript_path": str(transcript_path),
                 "summary_path": str(summary_path),
@@ -5540,6 +5647,7 @@ P 数索引：
         return self._build_task_result(
             transcript,
             {},
+            segments,
             artifacts={
                 "transcript_path": str(transcript_path),
                 "summary_path": str(summary_path),
@@ -5550,6 +5658,7 @@ P 数索引：
         self,
         transcript: str,
         summary: dict[str, object],
+        segments: list[dict[str, object]] | None = None,
         artifacts: dict[str, str] | None = None,
     ) -> TaskResult:
         knowledge_note_markdown = str(summary.get("knowledgeNoteMarkdown") or "").strip()
@@ -5557,6 +5666,7 @@ P 数索引：
             overview=str(summary.get("overview") or ""),
             knowledge_note_markdown=knowledge_note_markdown,
             transcript_text=transcript,
+            segments=segments or [],
             segment_summaries=[str(item["summary"]) for item in summary.get("chapters", [])],
             key_points=[str(item) for item in summary.get("bulletPoints", [])],
             timeline=[

@@ -40,6 +40,7 @@ export type TaskResult = {
   overview: string;
   knowledge_note_markdown?: string;
   transcript_text: string;
+  segments?: Array<{ start: number; end: number; text: string }>;
   segment_summaries: string[];
   key_points: string[];
   timeline: TimelineItem[];
@@ -355,6 +356,7 @@ export type ServiceSettings = {
   tasks_dir: string;
   database_url: string;
   transcription_provider: string;
+  prefer_bilibili_subtitle: boolean;
   whisper_model: string;
   whisper_device: string;
   whisper_compute_type: string;

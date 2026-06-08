@@ -534,6 +534,7 @@ class ServiceSettings(BaseSettings):
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
     transcription_provider: str = "siliconflow"
+    prefer_bilibili_subtitle: bool = True
     device_preference: str = "cpu"
     compute_type: str = "int8"
     model_mode: str = "fixed"
