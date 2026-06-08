@@ -298,6 +298,13 @@ export function SettingsPage({
   const [knowledgeDepsStatus, setKnowledgeDepsStatus] = useState("");
   const [knowledgeDepsOutput, setKnowledgeDepsOutput] = useState("");
   const [knowledgeDepsInstalling, setKnowledgeDepsInstalling] = useState(false);
+  const [embeddingDownloading, setEmbeddingDownloading] = useState(false);
+  const [embeddingTesting, setEmbeddingTesting] = useState(false);
+  const [embeddingStatus, setEmbeddingStatus] = useState("");
+  const [embeddingOutput, setEmbeddingOutput] = useState("");
+  const [embeddingVerified, setEmbeddingVerified] = useState(false);
+  const [embeddingPresets, setEmbeddingPresets] = useState<Record<string, string>>({});
+  const [embeddingCustomModel, setEmbeddingCustomModel] = useState("");
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null);
   const [runtimeStatusMessage, setRuntimeStatusMessage] = useState("");
   const [runtimeStatusLoading, setRuntimeStatusLoading] = useState(false);
@@ -1549,6 +1556,66 @@ export function SettingsPage({
       setKnowledgeDepsInstalling(false);
     }
   }
+
+  async function downloadEmbeddingModel() {
+    if (!form) return;
+    const sessionId = `emb-dl-${Date.now()}`;
+    try {
+      setEmbeddingDownloading(true);
+      setEmbeddingVerified(false);
+      setEmbeddingOutput("");
+      setEmbeddingStatus("正在安装依赖并下载模型...");
+      const response = await api.downloadEmbeddingModel({
+        provider: form.knowledge_embedding_provider || "local_huggingface",
+        model: form.knowledge_embedding_model,
+        hf_endpoint: form.hf_endpoint,
+        installSessionId: sessionId,
+      });
+      try {
+        const logResp = await api.getInstallLog(sessionId);
+        setEmbeddingOutput(logResp.log || response.stdoutTail || "");
+      } catch {
+        setEmbeddingOutput(response.stdoutTail || "");
+      }
+      setEmbeddingStatus(response.downloaded ? "模型下载完成，可以测试了。" : `下载失败：${response.detail}`);
+    } catch (error) {
+      setEmbeddingStatus(error instanceof Error ? error.message : "下载模型失败");
+    } finally {
+      setEmbeddingDownloading(false);
+    }
+  }
+
+  async function testEmbeddingModel() {
+    if (!form) return;
+    try {
+      setEmbeddingTesting(true);
+      setEmbeddingOutput("");
+      setEmbeddingStatus("正在加载并验证 Embedding 模型...");
+      const response = await api.testEmbeddingModel({
+        provider: form.knowledge_embedding_provider || "local_huggingface",
+        model: form.knowledge_embedding_model,
+        hf_endpoint: form.hf_endpoint,
+      });
+      setEmbeddingOutput(response.stdoutTail || "");
+      if (response.verified) {
+        setEmbeddingVerified(true);
+        setEmbeddingStatus(response.detail || "模型验证成功！");
+      } else {
+        setEmbeddingVerified(false);
+        setEmbeddingStatus(`验证失败：${response.detail}`);
+      }
+    } catch (error) {
+      setEmbeddingVerified(false);
+      setEmbeddingStatus(error instanceof Error ? error.message : "验证模型失败");
+    } finally {
+      setEmbeddingTesting(false);
+    }
+  }
+
+  // Load embedding presets on mount
+  useEffect(() => {
+    api.getEmbeddingPresets().then(r => setEmbeddingPresets(r.presets || {})).catch(() => {});
+  }, []);
 
   async function captureBilibiliLoginCookies() {
     if (!form || bilibiliCookieCapturing) {
@@ -3086,22 +3153,31 @@ export function SettingsPage({
                       </select>
                       <span className="settings-input-caption">向量模型从哪个源下载和加载。</span>
                     </label>
-                    {form.knowledge_embedding_provider === "local_huggingface" ? (
+                    {form.knowledge_embedding_provider !== "online" ? (
                       <>
-                        <label
-                          className={`settings-input-group settings-focus-target ${activeFocusTarget === "hf_endpoint" ? "is-highlighted" : ""}`}
-                          ref={registerFocusTarget("hf_endpoint") as (node: HTMLLabelElement | null) => void}
-                        >
-                          <span className="settings-input-label">HuggingFace 镜像地址</span>
-                          <input
-                            className="settings-input-field"
-                            value={form.hf_endpoint}
-                            disabled={!form.knowledge_enabled}
-                            onChange={(e) => updateForm({ ...form, hf_endpoint: e.target.value })}
-                            placeholder="留空使用官方源，或填 https://hf-mirror.com"
-                          />
-                          <span className="settings-input-caption">国内用户建议填写 https://hf-mirror.com 加速下载。</span>
-                        </label>
+                        {Object.keys(embeddingPresets).length > 0 ? (
+                          <label className="settings-input-group">
+                            <span className="settings-input-label">推荐模型</span>
+                            <select
+                              className="settings-select-field"
+                              value={form.knowledge_embedding_model && embeddingPresets[form.knowledge_embedding_model] ? form.knowledge_embedding_model : "__custom__"}
+                              disabled={!form.knowledge_enabled}
+                              onChange={(e) => {
+                                if (e.target.value === "__custom__") {
+                                  updateForm({ ...form, knowledge_embedding_model: "" });
+                                } else {
+                                  updateForm({ ...form, knowledge_embedding_model: e.target.value });
+                                }
+                              }}
+                            >
+                              {Object.entries(embeddingPresets).map(([id, label]) => (
+                                <option key={id} value={id}>{label}</option>
+                              ))}
+                              <option value="__custom__">自定义模型名...</option>
+                            </select>
+                            <span className="settings-input-caption">从推荐列表中选择，或选"自定义模型名"手动输入。</span>
+                          </label>
+                        ) : null}
                         <label
                           className={`settings-input-group settings-focus-target ${activeFocusTarget === "knowledge_embedding_model" ? "is-highlighted" : ""}`}
                           ref={registerFocusTarget("knowledge_embedding_model") as (node: HTMLLabelElement | null) => void}
@@ -3114,24 +3190,58 @@ export function SettingsPage({
                             onChange={(e) => updateForm({ ...form, knowledge_embedding_model: e.target.value })}
                             placeholder="BAAI/bge-small-zh-v1.5"
                           />
-                          <span className="settings-input-caption">HuggingFace 上的模型 ID，如 BAAI/bge-small-zh-v1.5。</span>
+                          <span className="settings-input-caption">
+                            {form.knowledge_embedding_provider === "local_huggingface"
+                              ? "HuggingFace 上的模型 ID，如 BAAI/bge-small-zh-v1.5。"
+                              : "ModelScope 上的模型 ID，如 BAAI/bge-small-zh-v1.5。"}
+                          </span>
                         </label>
+                        {form.knowledge_embedding_provider === "local_huggingface" ? (
+                          <label
+                            className={`settings-input-group settings-focus-target ${activeFocusTarget === "hf_endpoint" ? "is-highlighted" : ""}`}
+                            ref={registerFocusTarget("hf_endpoint") as (node: HTMLLabelElement | null) => void}
+                          >
+                            <span className="settings-input-label">HuggingFace 镜像地址</span>
+                            <input
+                              className="settings-input-field"
+                              value={form.hf_endpoint}
+                              disabled={!form.knowledge_enabled}
+                              onChange={(e) => updateForm({ ...form, hf_endpoint: e.target.value })}
+                              placeholder="留空使用官方源，或填 https://hf-mirror.com"
+                            />
+                            <span className="settings-input-caption">国内用户建议填写 https://hf-mirror.com 加速下载。</span>
+                          </label>
+                        ) : null}
+                        <div className="settings-inline-actions">
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            disabled={embeddingDownloading || !form.knowledge_enabled}
+                            onClick={() => void downloadEmbeddingModel()}
+                          >
+                            {embeddingDownloading ? "下载中..." : "下载模型"}
+                          </button>
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            disabled={embeddingTesting || embeddingDownloading || !form.knowledge_enabled}
+                            onClick={() => void testEmbeddingModel()}
+                          >
+                            {embeddingTesting ? "验证中..." : "验证模型"}
+                          </button>
+                          {embeddingVerified ? (
+                            <span className="settings-status-pill success">已就绪</span>
+                          ) : null}
+                        </div>
+                        {embeddingStatus ? (
+                          <div className={`settings-inline-alert ${embeddingVerified ? "success" : embeddingStatus.includes("失败") ? "warning" : "info"}`}>
+                            <span>{embeddingStatus}</span>
+                          </div>
+                        ) : null}
+                        {embeddingOutput ? (
+                          <textarea className="textarea-field log-viewer" rows={10} readOnly value={embeddingOutput}></textarea>
+                        ) : null}
                       </>
-                    ) : form.knowledge_embedding_provider === "local_modelscope" ? (
-                      <label
-                        className={`settings-input-group settings-focus-target ${activeFocusTarget === "knowledge_embedding_model" ? "is-highlighted" : ""}`}
-                        ref={registerFocusTarget("knowledge_embedding_model") as (node: HTMLLabelElement | null) => void}
-                      >
-                        <span className="settings-input-label">模型名称</span>
-                        <input
-                          className="settings-input-field"
-                          value={form.knowledge_embedding_model}
-                          disabled={!form.knowledge_enabled}
-                          onChange={(e) => updateForm({ ...form, knowledge_embedding_model: e.target.value })}
-                          placeholder="BAAI/bge-small-zh-v1.5"
-                        />
-                        <span className="settings-input-caption">ModelScope 上的模型 ID，如 BAAI/bge-small-zh-v1.5。</span>
-                      </label>
                     ) : (
                       <div className="settings-inline-alert warning">
                         <strong>在线 Embedding API 暂不可用</strong>

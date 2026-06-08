@@ -2176,3 +2176,203 @@ def install_knowledge_dependencies(
         "repairReinstall": repair_reinstall,
         "environment": environment,
     }, worker
+
+
+# -- embedding model presets -------------------------------------------------
+_EMBEDDING_MODEL_PRESETS: dict[str, str] = {
+    # HuggingFace presets
+    "BAAI/bge-small-zh-v1.5": "BAAI bge-small-zh 中文轻量 (HF)",
+    "BAAI/bge-base-zh-v1.5": "BAAI bge-base-zh 中文通用 (HF)",
+    "BAAI/bge-large-zh-v1.5": "BAAI bge-large-zh 中文最强 (HF)",
+    "BAAI/bge-small-en-v1.5": "BAAI bge-small-en 英文轻量 (HF)",
+    "moka-ai/m3e-base": "M3E 中文 Embedding (HF)",
+    # ModelScope presets (same model IDs, loaded via MS SDK)
+}
+
+def _build_embedding_download_script(provider: str, model_name: str, hf_endpoint: str = "") -> str:
+    if provider == "local_modelscope":
+        return (
+            "import sys, json, traceback;"
+            "try:\n"
+            " from modelscope.hub.snapshot_download import snapshot_download\n"
+            f" print(f'ModelScope downloading {model_name}...', file=sys.stderr)\n"
+            f" path = snapshot_download('{model_name}')\n"
+            " print(f'[OK] path={path}', file=sys.stderr)\n"
+            " print(json.dumps({'ok': True, 'path': path}))\n"
+            "except Exception as e:\n"
+            " traceback.print_exc(file=sys.stderr)\n"
+            " print(json.dumps({'ok': False, 'error': str(e)}))"
+        )
+    else:
+        hf_mirror_line = f"import os; os.environ['HF_ENDPOINT'] = '{hf_endpoint}';" if hf_endpoint else ""
+        return (
+            f"{hf_mirror_line}"
+            "import sys, json, traceback;"
+            "try:\n"
+            " from huggingface_hub import snapshot_download\n"
+            f" print(f'HF downloading {model_name}...', file=sys.stderr)\n"
+            f" path = snapshot_download('{model_name}', resume_download=True)\n"
+            " print(f'[OK] path={path}', file=sys.stderr)\n"
+            " print(json.dumps({'ok': True, 'path': path}))\n"
+            "except Exception as e:\n"
+            " traceback.print_exc(file=sys.stderr)\n"
+            " print(json.dumps({'ok': False, 'error': str(e)}))"
+        )
+
+
+def _build_embedding_verify_script(provider: str, model_name: str, hf_endpoint: str = "") -> str:
+    if provider == "local_modelscope":
+        return (
+            "import sys, json;"
+            "from modelscope.hub.snapshot_download import snapshot_download;"
+            "from sentence_transformers import SentenceTransformer;"
+            f"print('ModelScope loading {model_name}...', file=sys.stderr);"
+            f"path = snapshot_download('{model_name}');"
+            "m = SentenceTransformer(path, local_files_only=True);"
+            f"print('Running test encode...', file=sys.stderr);"
+            "v = m.encode(['hello world']);"
+            f"print(f'[OK] dim={{v.shape[1]}}', file=sys.stderr);"
+            "print(json.dumps({'ok': True, 'dim': int(v.shape[1])}))"
+        )
+    else:
+        hf_mirror_line = f"import os; os.environ['HF_ENDPOINT'] = '{hf_endpoint}';" if hf_endpoint else ""
+        return (
+            f"{hf_mirror_line}"
+            "import sys, json;"
+            "from sentence_transformers import SentenceTransformer;"
+            f"print('SentenceTransformer loading {model_name}...', file=sys.stderr);"
+            f"m = SentenceTransformer('{model_name}');"
+            f"print('Running test encode...', file=sys.stderr);"
+            "v = m.encode(['hello world']);"
+            f"print(f'[OK] dim={{v.shape[1]}}', file=sys.stderr);"
+            "print(json.dumps({'ok': True, 'dim': int(v.shape[1])}))"
+        )
+
+
+def download_embedding_model(
+    repository: SqliteTaskRepository,
+    *,
+    provider: str = "local_huggingface",
+    model_name: str = "BAAI/bge-small-zh-v1.5",
+    hf_endpoint: str = "",
+    session_id: str | None = None,
+) -> dict[str, object]:
+    current_settings = settings_manager.current
+    runtime_channel = normalize_runtime_channel(current_settings.runtime_channel, allow_unknown_gpu=True)
+
+    if provider == "online":
+        raise HTTPException(status_code=501, detail="在线 Embedding API 暂不支持。")
+
+    use_current_python = uses_current_service_python(runtime_channel)
+    if use_current_python:
+        python_executable = Path(sys.executable)
+        runner = lambda command, runtime_channel, timeout=1800: run_host_command(command, timeout=timeout)
+        pip_runner = runner
+    else:
+        runtime_dir = ensure_runtime_channel(runtime_channel)
+        python_executable = runtime_python_executable(runtime_channel)
+        runner = run_command
+        pip_runner = _StreamingRunner(session_id) if session_id else runner
+    if python_executable is None:
+        raise HTTPException(status_code=500, detail="Managed runtime Python is unavailable.")
+
+    if session_id:
+        start_install_session(session_id, "Embedding 模型下载")
+
+    try:
+        if not use_current_python:
+            ensure_runtime_pip(python_executable, runtime_channel)
+
+        # Install prerequisite packages with streaming
+        if provider == "local_modelscope":
+            _run_pip_install(python_executable, runtime_channel, ["modelscope"], package_label="modelscope", timeout=600, runner=pip_runner)
+        else:
+            _run_pip_install(python_executable, runtime_channel, ["sentence-transformers>=3.0"], package_label="sentence-transformers", timeout=600, runner=pip_runner)
+
+        download_script = _build_embedding_download_script(provider, model_name, hf_endpoint)
+        result = runner(
+            [str(python_executable), "-c", download_script],
+            runtime_channel=runtime_channel,
+            timeout=3600,
+        )
+        # Extract JSON from last line of stdout in case stderr mixed in
+        stdout = (result.stdout or "").strip()
+        data: dict[str, object] = {}
+        for line in reversed(stdout.splitlines()):
+            try:
+                data = json.loads(line.strip())
+                break
+            except (json.JSONDecodeError, ValueError):
+                continue
+        downloaded = bool(data.get("ok"))
+        if session_id:
+            finish_install_session(session_id, success=downloaded)
+        return {
+            "downloaded": downloaded,
+            "modelPath": str(data.get("path") or ""),
+            "detail": "" if downloaded else (result.stderr or result.stdout or "")[-2000:],
+            "stdoutTail": stdout[-3000:],
+            "installSessionId": session_id,
+        }
+    except Exception as exc:
+        if session_id:
+            finish_install_session(session_id, success=False)
+        detail = (getattr(exc, "stderr", "") or getattr(exc, "stdout", "") or str(exc))[-2000:]
+        return {
+            "downloaded": False,
+            "modelPath": "",
+            "detail": detail,
+            "stdoutTail": detail,
+            "installSessionId": session_id,
+        }
+
+
+def verify_embedding_model(
+    repository: SqliteTaskRepository,
+    *,
+    provider: str = "local_huggingface",
+    model_name: str = "BAAI/bge-small-zh-v1.5",
+    hf_endpoint: str = "",
+) -> dict[str, object]:
+    current_settings = settings_manager.current
+    runtime_channel = normalize_runtime_channel(current_settings.runtime_channel, allow_unknown_gpu=True)
+
+    if provider == "online":
+        raise HTTPException(status_code=501, detail="在线 Embedding API 暂不支持。")
+
+    use_current_python = uses_current_service_python(runtime_channel)
+    if use_current_python:
+        python_executable = Path(sys.executable)
+        runner = lambda command, runtime_channel, timeout=1800: run_host_command(command, timeout=timeout)
+    else:
+        python_executable = runtime_python_executable(runtime_channel)
+        runner = run_command
+    if python_executable is None:
+        raise HTTPException(status_code=500, detail="Managed runtime Python is unavailable.")
+
+    verify_script = _build_embedding_verify_script(provider, model_name, hf_endpoint)
+    try:
+        result = runner(
+            [str(python_executable), "-c", verify_script],
+            runtime_channel=runtime_channel,
+            timeout=600,
+        )
+        stdout = (result.stdout or "").strip()
+        data: dict[str, object] = {}
+        for line in reversed(stdout.splitlines()):
+            try:
+                data = json.loads(line.strip())
+                break
+            except (json.JSONDecodeError, ValueError):
+                continue
+        if data.get("ok") and data.get("dim"):
+            return {"verified": True, "dimension": data.get("dim"), "detail": f"模型可用，向量维度 {data['dim']}", "stdoutTail": stdout[-3000:]}
+        return {"verified": False, "dimension": 0, "detail": (result.stderr or stdout or "unknown error")[-2000:], "stdoutTail": stdout[-3000:]}
+    except Exception as exc:
+        detail = (getattr(exc, "stderr", "") or getattr(exc, "stdout", "") or str(exc))[-2000:]
+        return {"verified": False, "dimension": 0, "detail": detail, "stdoutTail": detail}
+
+
+def get_embedding_model_presets() -> dict[str, str]:
+    """Return the available embedding model presets."""
+    return dict(_EMBEDDING_MODEL_PRESETS)

@@ -46,7 +46,9 @@ from video_sum_service.runtime_support import (
     build_worker,
     clear_environment_probe_cache,
     detect_environment,
+    download_embedding_model,
     ensure_runtime_channel,
+    get_embedding_model_presets,
     inspect_runtime_channels,
     install_cuda_support,
     install_funasr,
@@ -58,6 +60,7 @@ from video_sum_service.runtime_support import (
     serialize_settings,
     sync_all_runtime_channels,
     sync_runtime_channel,
+    verify_embedding_model,
 )
 from video_sum_service.schemas import (
     PromptMatchRequest,
@@ -587,3 +590,36 @@ def post_knowledge_install(request: Request, payload: dict[str, object] | None =
             "Runtime worker refreshed after knowledge install.",
         )
     return result
+
+
+@router.post("/knowledge/embedding/download")
+def post_embedding_download(payload: dict[str, object]) -> dict[str, object]:
+    provider = str(payload.get("provider") or "local_huggingface")
+    model_name = str(payload.get("model") or "BAAI/bge-small-zh-v1.5")
+    hf_endpoint = str(payload.get("hf_endpoint") or "")
+    session_id = str(payload.get("installSessionId") or "") or None
+    return download_embedding_model(
+        None,  # type: ignore
+        provider=provider,
+        model_name=model_name,
+        hf_endpoint=hf_endpoint,
+        session_id=session_id,
+    )
+
+
+@router.post("/knowledge/embedding/test")
+def post_embedding_test(payload: dict[str, object]) -> dict[str, object]:
+    provider = str(payload.get("provider") or "local_huggingface")
+    model_name = str(payload.get("model") or "BAAI/bge-small-zh-v1.5")
+    hf_endpoint = str(payload.get("hf_endpoint") or "")
+    return verify_embedding_model(
+        None,  # type: ignore
+        provider=provider,
+        model_name=model_name,
+        hf_endpoint=hf_endpoint,
+    )
+
+
+@router.get("/knowledge/embedding/presets")
+def get_embedding_presets() -> dict[str, object]:
+    return {"presets": get_embedding_model_presets()}

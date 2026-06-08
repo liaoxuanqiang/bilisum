@@ -507,6 +507,34 @@ export const api = {
       body: JSON.stringify(payload ?? {}),
     });
   },
+  downloadEmbeddingModel(payload: { provider?: string; model?: string; hf_endpoint?: string; installSessionId?: string }) {
+    return fetchJson<{
+      downloaded: boolean;
+      modelPath?: string;
+      detail?: string;
+      stdoutTail?: string;
+      installSessionId?: string;
+    }>("/api/v1/knowledge/embedding/download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
+    });
+  },
+  testEmbeddingModel(payload: { provider?: string; model?: string; hf_endpoint?: string }) {
+    return fetchJson<{
+      verified: boolean;
+      dimension?: number;
+      detail?: string;
+      stdoutTail?: string;
+    }>("/api/v1/knowledge/embedding/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload ?? {}),
+    });
+  },
+  getEmbeddingPresets() {
+    return fetchJson<{ presets: Record<string, string> }>("/api/v1/knowledge/embedding/presets");
+  },
   createTaskEventSource(taskId: string, after?: string | null) {
     const url = new URL(`/api/v1/tasks/${taskId}/events/stream`, window.location.origin);
     if (after) {
