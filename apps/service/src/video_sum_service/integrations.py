@@ -127,6 +127,26 @@ def cache_cover_image(source_url: str, canonical_id: str, referer_url: str | Non
     if not source_url:
         return ""
     normalized_source = source_url.replace("http://", "https://")
+
+    # 验证 URL 安全性 - 防止 SSRF 攻击
+    from urllib.parse import urlparse
+    parsed = urlparse(normalized_source)
+
+    # 视频封面 URL 白名单
+    ALLOWED_COVER_DOMAINS = [
+        "bilibili.com", "hdslb.com", "bilivideo.com",  # B站
+        "ytimg.com", "ggpht.com", "googleusercontent.com",  # YouTube
+        "twimg.com",  # Twitter
+    ]
+
+    if parsed.scheme != "https":
+        logger.warning("cover image URL must use HTTPS: %s", normalized_source)
+        return normalized_source
+
+    if not any(parsed.netloc.endswith(domain) or parsed.netloc == domain for domain in ALLOWED_COVER_DOMAINS):
+        logger.warning("cover image URL domain not in whitelist: %s", parsed.netloc)
+        return normalized_source
+
     COVER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     target = COVER_CACHE_DIR / f"{canonical_id}.jpg"
     if target.exists():
@@ -708,6 +728,19 @@ def fetch_bilibili_subtitle(
             subtitle_url = "https:" + subtitle_url
         elif subtitle_url.startswith("http://"):
             subtitle_url = subtitle_url.replace("http://", "https://")
+
+        # 验证 URL 安全性 - 防止 SSRF 攻击
+        from urllib.parse import urlparse
+        parsed = urlparse(subtitle_url)
+        ALLOWED_DOMAINS = ["bilibili.com", "hdslb.com", "bilivideo.com"]
+
+        if parsed.scheme != "https":
+            logger.warning("bilibili subtitle URL must use HTTPS: %s", subtitle_url)
+            return None
+
+        if not any(parsed.netloc.endswith(domain) or parsed.netloc == domain for domain in ALLOWED_DOMAINS):
+            logger.warning("bilibili subtitle URL domain not in whitelist: %s", parsed.netloc)
+            return None
 
         # 下载字幕 JSON
         with httpx.Client(timeout=15.0, follow_redirects=True) as client:

@@ -100,10 +100,32 @@ def _split_env_urls(raw_value: str | None) -> list[str]:
     return [item.strip() for item in normalized.splitlines() if item.strip()]
 
 
+def _validate_index_url(url: str) -> bool:
+    """验证 pip index URL 的安全性 - 防止命令注入"""
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(url)
+        # 只允许 HTTPS 协议，禁止 file://, ftp:// 等
+        if parsed.scheme != "https":
+            logger.warning("index URL must use HTTPS: %s", url)
+            return False
+        # 必须有有效的 netloc（域名）
+        if not parsed.netloc:
+            logger.warning("index URL missing domain: %s", url)
+            return False
+        return True
+    except Exception as e:
+        logger.warning("invalid index URL: %s, error: %s", url, e)
+        return False
+
+
 def _torch_index_candidates(cuda_variant: str) -> list[tuple[str, str]]:
     candidates: list[tuple[str, str]] = [("official", f"https://download.pytorch.org/whl/{cuda_variant}")]
     for index, url in enumerate(_split_env_urls(os.environ.get("VIDEO_SUM_TORCH_INDEX_URLS")), start=1):
-        candidates.append((f"custom-{index}", url))
+        if _validate_index_url(url):
+            candidates.append((f"custom-{index}", url))
+        else:
+            logger.warning("skipping invalid custom index URL: %s", url)
     return candidates
 
 
@@ -362,6 +384,32 @@ def append_install_log(session_id: str, line: str) -> None:
 def read_install_log(session_id: str, tail_bytes: int = 8192) -> dict[str, object]:
     meta = _install_sessions.get(session_id, {})
     log = _install_log_path(session_id)
+
+    # 验证路径安全性 - 防止路径遍历攻击
+    try:
+        resolved_log = log.resolve()
+        resolved_dir = _install_log_dir.resolve()
+        if not resolved_log.is_relative_to(resolved_dir):
+            logger.warning("path traversal attempt detected: session_id=%s", session_id)
+            return {
+                "sessionId": session_id,
+                "label": meta.get("label", ""),
+                "done": meta.get("done", False),
+                "success": meta.get("success", False),
+                "progress": meta.get("progress", 0),
+                "log": "",
+            }
+    except (ValueError, OSError) as e:
+        logger.warning("invalid log path: session_id=%s, error=%s", session_id, e)
+        return {
+            "sessionId": session_id,
+            "label": meta.get("label", ""),
+            "done": meta.get("done", False),
+            "success": meta.get("success", False),
+            "progress": meta.get("progress", 0),
+            "log": "",
+        }
+
     content = ""
     if log.exists():
         raw = log.read_bytes()

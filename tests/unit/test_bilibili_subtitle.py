@@ -16,7 +16,7 @@ def test_fetch_bilibili_subtitle_success():
         "data": {
             "subtitle": {
                 "subtitles": [
-                    {"subtitle_url": "https://example.com/subtitle.json", "lan": "zh-CN", "lan_doc": "中文（简体）"}
+                    {"subtitle_url": "https://i0.hdslb.com/bfs/subtitle/test.json", "lan": "zh-CN", "lan_doc": "中文（简体）"}
                 ]
             }
         }

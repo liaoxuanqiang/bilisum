@@ -2000,7 +2000,12 @@ function getTrayImage() {
 
 function setAutoLaunch(enabled: boolean): boolean {
   try {
-    app.setLoginItemSettings({ openAtLogin: enabled });
+    const loginSettings: Electron.Settings = { openAtLogin: enabled };
+    // 如果开启静默启动，添加 --hidden 参数
+    if (enabled && preferences.silentStart) {
+      loginSettings.args = ['--hidden'];
+    }
+    app.setLoginItemSettings(loginSettings);
   } catch (err) {
     console.error("setLoginItemSettings failed:", err);
   }
@@ -2642,6 +2647,10 @@ function registerIpcHandlers() {
     preferences = { ...preferences, silentStart: Boolean(enabled) };
     savePreferences();
     rebuildTrayMenu();
+    // 如果开启了自启动，更新启动参数
+    if (preferences.autoLaunch) {
+      setAutoLaunch(true);
+    }
     return preferences.silentStart;
   });
   ipcMain.handle("desktop:preferences:get-silent-start", () => getPreferences().silentStart);
