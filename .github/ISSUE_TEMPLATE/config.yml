@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 LinuxDO 社区讨论
+    url: https://linux.do/t/topic/2175871
+    about: 在 LinuxDO 社区提问或讨论使用问题
+  - name: 📖 项目文档
+    url: https://github.com/lycohana/BiliSum/blob/master/README.md
+    about: 查看完整的使用文档和常见问题
+  - name: 🤝 贡献指南
+    url: https://github.com/lycohana/BiliSum/blob/master/.github/CONTRIBUTING.md
+    about: 了解如何为项目做出贡献
