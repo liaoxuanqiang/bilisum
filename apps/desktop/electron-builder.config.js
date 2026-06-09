@@ -46,8 +46,7 @@ module.exports = {
       }
     ],
     "icon": "../../apps/desktop/build/icon.ico",
-    "sign": null,
-    "signAndEditExecutable": true,
+    "signAndEditExecutable": false,
     "signDlls": false,
     "requestedExecutionLevel": "asInvoker",
     "fileAssociations": []
