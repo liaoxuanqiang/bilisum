@@ -1,5 +1,9 @@
+# Dockerfile.vercel — BiliSum 适配 Vercel Fluid Compute
+# 基于原始 Dockerfile 转换，遵循 Vercel 无状态容器规范
+
 FROM python:3.12-slim
 
+# APT 镜像源（国内构建可保留）
 ARG APT_MIRROR=http://mirrors.tuna.tsinghua.edu.cn
 
 RUN if [ -n "${APT_MIRROR}" ]; then \
@@ -14,7 +18,6 @@ ENV PATH=/opt/ffmpeg/bin:${PATH} \
     PIP_NO_CACHE_DIR=1 \
     VIDEO_SUM_DOCKER=1 \
     VIDEO_SUM_HOST=0.0.0.0 \
-    VIDEO_SUM_PORT=3838 \
     VIDEO_SUM_APP_DATA_ROOT=/data \
     VIDEO_SUM_DATA_DIR=/data \
     VIDEO_SUM_CACHE_DIR=/data/cache \
@@ -34,7 +37,8 @@ RUN python -m pip install --upgrade pip setuptools wheel hatchling \
 
 RUN mkdir -p /data/cache /data/tasks /data/logs
 
-EXPOSE 3838
-VOLUME ["/data"]
+# Vercel 不需要 EXPOSE 和 VOLUME（容器无状态，重启数据丢失）
+# 原始文件中的 VOLUME ["/data"] 已移除
 
-CMD ["python", "-m", "video_sum_service"]
+# Vercel 通过 $PORT 注入端口，动态覆盖 VIDEO_SUM_PORT
+CMD ["sh", "-c", "export VIDEO_SUM_PORT=${PORT:-3838} && python -m video_sum_service"]
