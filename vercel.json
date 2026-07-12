@@ -3,7 +3,7 @@
   "builds": [
     {
       "src": "Dockerfile.vercel",
-      "use": "@vercel/docker"
+      "use": "@vercel/containers"
     }
   ]
 }
