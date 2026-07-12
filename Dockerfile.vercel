@@ -6,6 +6,7 @@ WORKDIR /app/apps/desktop
 COPY apps/desktop/package.json apps/desktop/package-lock.json ./
 COPY apps/desktop/tsconfig.json ./
 COPY apps/desktop/vite.config.ts ./
+COPY apps/desktop/index.html ./
 COPY apps/desktop/src ./src
 COPY apps/web/static ./../web/static
 RUN npm install --legacy-peer-deps
@@ -23,7 +24,7 @@ WORKDIR /app
 COPY pyproject.toml VERSION ./
 COPY packages ./packages
 COPY apps/service ./apps/service
-COPY --from=frontend-build /app/web/static ./apps/web/static
+COPY --from=frontend-build /app/apps/web/static ./apps/web/static
 
 ENV PATH=/opt/ffmpeg/bin:${PATH} \
     PYTHONUNBUFFERED=1 \
@@ -39,7 +40,7 @@ ENV PATH=/opt/ffmpeg/bin:${PATH} \
     VIDEO_SUM_WEB_STATIC_DIR=/app/apps/web/static
 
 RUN python -m pip install --upgrade pip setuptools wheel hatchling \
-    && python -m pip install ./packages/infra ./packages/core './apps/service[knowledge]'
+    && python -m pip install --no-cache-dir ./packages/infra ./packages/core './apps/service'
 
 RUN mkdir -p /data/cache /data/tasks /data/logs
 
