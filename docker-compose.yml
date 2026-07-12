@@ -1,0 +1,23 @@
+version: "3.9"
+
+services:
+  bilisum:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bilisum:local
+    container_name: bilisum
+    ports:
+      - "3838:3838"
+    environment:
+      VIDEO_SUM_ACCESS_TOKEN: "${VIDEO_SUM_ACCESS_TOKEN:-changeme}"
+      VIDEO_SUM_HOST: "0.0.0.0"
+      VIDEO_SUM_PORT: "3838"
+      VIDEO_SUM_DATABASE_URL: "sqlite:////data/video_sum.db"
+      VIDEO_SUM_WEB_STATIC_DIR: "/app/apps/web/static"
+    volumes:
+      - bilisum_data:/data
+    restart: unless-stopped
+
+volumes:
+  bilisum_data:

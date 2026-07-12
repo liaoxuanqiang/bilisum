@@ -1,17 +1,29 @@
-FROM python:3.12-slim
+# Vercel custom Dockerfile for BiliSum
+# This image builds the web static assets and the Python service.
 
-# Vercel Fluid Compute compatibility
-# - no persistent volume support
-# - bind to $PORT at runtime
-# - use ephemeral writable directories under /tmp
+FROM node:20-bullseye-slim AS frontend-build
+WORKDIR /app/apps/desktop
+COPY apps/desktop/package.json apps/desktop/package-lock.json ./
+COPY apps/desktop/tsconfig.json ./
+COPY apps/desktop/vite.config.ts ./
+COPY apps/desktop/src ./src
+COPY apps/web/static ./../web/static
+RUN npm install --legacy-peer-deps
+RUN npm run build:renderer
 
+FROM python:3.12-slim AS runtime
 ARG APT_MIRROR=http://mirrors.tuna.tsinghua.edu.cn
-
 RUN if [ -n "${APT_MIRROR}" ]; then \
         sed -i "s|http://deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
     fi \
     && apt-get update && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY pyproject.toml VERSION ./
+COPY packages ./packages
+COPY apps/service ./apps/service
+COPY --from=frontend-build /app/web/static ./apps/web/static
 
 ENV PATH=/opt/ffmpeg/bin:${PATH} \
     PYTHONUNBUFFERED=1 \
@@ -19,25 +31,18 @@ ENV PATH=/opt/ffmpeg/bin:${PATH} \
     PIP_NO_CACHE_DIR=1 \
     VIDEO_SUM_DOCKER=1 \
     VIDEO_SUM_HOST=0.0.0.0 \
-    VIDEO_SUM_PORT=3838 \
-    VIDEO_SUM_APP_DATA_ROOT=/tmp \
-    VIDEO_SUM_DATA_DIR=/tmp \
-    VIDEO_SUM_CACHE_DIR=/tmp/cache \
-    VIDEO_SUM_TASKS_DIR=/tmp/tasks \
-    VIDEO_SUM_DATABASE_URL=sqlite:////tmp/video_sum.db \
+    VIDEO_SUM_APP_DATA_ROOT=/data \
+    VIDEO_SUM_DATA_DIR=/data \
+    VIDEO_SUM_CACHE_DIR=/data/cache \
+    VIDEO_SUM_TASKS_DIR=/data/tasks \
+    VIDEO_SUM_DATABASE_URL=sqlite:////data/video_sum.db \
     VIDEO_SUM_WEB_STATIC_DIR=/app/apps/web/static
-
-WORKDIR /app
-
-COPY pyproject.toml VERSION ./
-COPY packages ./packages
-COPY apps/service ./apps/service
-COPY apps/web/static ./apps/web/static
 
 RUN python -m pip install --upgrade pip setuptools wheel hatchling \
     && python -m pip install ./packages/infra ./packages/core './apps/service[knowledge]'
 
-RUN mkdir -p /tmp/cache /tmp/tasks /tmp/logs
+RUN mkdir -p /data/cache /data/tasks /data/logs
 
-# Vercel runtime injects $PORT, so override service port dynamically
-CMD ["sh", "-lc", "export VIDEO_SUM_PORT=${PORT:-3838} && python -m video_sum_service"]
+EXPOSE 3838
+VOLUME ["/data"]
+CMD ["sh", "-lc", "VIDEO_SUM_PORT=${PORT:-3838} python -m video_sum_service"]
